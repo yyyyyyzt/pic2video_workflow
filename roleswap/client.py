@@ -14,9 +14,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from .config import RoleSwapConfig
 from . import workflow_template as wf
-
+from .config import RoleSwapConfig
 
 # 用于判断一个字符串输入是「公网 URL」「base64 data」还是「本地文件路径」。
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)

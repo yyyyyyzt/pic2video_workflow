@@ -19,10 +19,10 @@
                            output_path="final.mp4")
 """
 
-from .config import RoleSwapConfig
 from .client import RoleSwapClient
-from .long_video import LongVideoProcessor
+from .config import RoleSwapConfig
 from .facade import generate_digital_human
+from .long_video import LongVideoProcessor
 
 __all__ = [
     "RoleSwapConfig",

@@ -14,3 +14,5 @@ env/
 *.aac
 *.roleswap_work/
 output/
+web_uploads/
+web_outputs/

@@ -75,7 +75,109 @@ generate_digital_human(
 python main.py
 ```
 
-### 2) 基础客户端——单段（≤5 秒）
+### 3) Web 测试页面（Ubuntu 服务器推荐）
+
+提供一个简洁的 Web 界面：上传**表演视频 + 目标人脸**，填写 `duration / steps / cfg / shift / seed / max_parallel`，提交后异步生成并下载结果。适合在 Ubuntu 服务器上稳定联调。
+
+#### 一次性安装（Ubuntu 22.04/24.04）
+
+```bash
+# 1. 系统依赖
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip ffmpeg
+
+# 2. 进入项目目录
+cd /path/to/pic2video_workflow
+
+# 3. 创建虚拟环境并安装依赖
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+
+# 4. 配置推理 API
+cp .env.example .env
+nano .env   # 填入 ROLESWAP_BASE_URL / ROLESWAP_WORKFLOW_ID
+```
+
+#### 启动方式 A：开发调试（本机快速验证）
+
+```bash
+source .venv/bin/activate
+export $(grep -v '^#' .env | xargs)   # 加载环境变量（可选）
+python -m web.app
+# 浏览器访问 http://<服务器IP>:7860
+```
+
+#### 启动方式 B：生产稳定运行（gunicorn，推荐）
+
+```bash
+source .venv/bin/activate
+chmod +x scripts/start_web.sh
+./scripts/start_web.sh
+```
+
+等价手动命令：
+
+```bash
+source .venv/bin/activate
+gunicorn --bind 0.0.0.0:7860 --workers 1 --threads 4 --timeout 3600 web.app:app
+```
+
+> **注意**：长视频任务耗时很长，且任务状态保存在内存中，请将 `--workers` 保持为 **1**。
+> 多 worker 会导致任务状态不一致。
+
+#### 后台常驻（nohup）
+
+```bash
+source .venv/bin/activate
+nohup ./scripts/start_web.sh > roleswap_web.log 2>&1 &
+echo $! > roleswap_web.pid
+# 查看日志：tail -f roleswap_web.log
+# 停止：kill $(cat roleswap_web.pid)
+```
+
+#### 可选：systemd 服务
+
+创建 `/etc/systemd/system/roleswap-web.service`：
+
+```ini
+[Unit]
+Description=RoleSwap Web Test UI
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/path/to/pic2video_workflow
+EnvironmentFile=/path/to/pic2video_workflow/.env
+ExecStart=/path/to/pic2video_workflow/.venv/bin/gunicorn --bind 0.0.0.0:7860 --workers 1 --threads 4 --timeout 3600 web.app:app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now roleswap-web
+sudo systemctl status roleswap-web
+```
+
+#### 防火墙放行（若从外网访问）
+
+```bash
+sudo ufw allow 7860/tcp
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:7860/health
+```
+
+### 4) 基础客户端——单段（≤5 秒）
 
 ```python
 from roleswap import RoleSwapClient
@@ -147,6 +249,12 @@ roleswap/
   video_utils.py       # 切分 / 重叠规划 / crossfade 拼接 / 音频提取合并
   long_video.py        # LongVideoProcessor：调度 / 并行 / 重试 / 断点续传
   facade.py            # generate_digital_human 高层门面
+web/
+  app.py               # Flask Web 测试页面
+  job_store.py         # 内存任务状态
+  templates/index.html
+  static/              # 样式与前端脚本
+scripts/start_web.sh   # Ubuntu 启动脚本（gunicorn）
 main.py                # 5 行使用示例
 requirements.txt
 .env.example

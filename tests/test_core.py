@@ -16,8 +16,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from roleswap import workflow_template as wf
 from roleswap import video_utils as vu
+from roleswap import workflow_template as wf
 
 
 def test_plan_segments_overlap():

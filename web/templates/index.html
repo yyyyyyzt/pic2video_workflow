@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RoleSwap 测试台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>RoleSwap 数字人测试台</h1>
+      <p>上传表演视频 + 目标人脸，调整少量参数后提交。适合 Ubuntu 服务器稳定联调。</p>
+    </header>
+
+    <form id="job-form" class="card">
+      <div class="grid-2">
+        <label class="field">
+          <span>表演视频 *</span>
+          <input type="file" name="video" accept="video/*" required />
+        </label>
+        <label class="field">
+          <span>目标人脸图片 *</span>
+          <input type="file" name="face" accept="image/*" required />
+        </label>
+      </div>
+
+      <div class="grid-3">
+        <label class="field">
+          <span>目标时长 duration（秒）</span>
+          <input type="number" name="duration" value="60" min="1" max="600" />
+        </label>
+        <label class="field">
+          <span>采样步数 steps</span>
+          <input type="number" name="steps" value="6" min="1" max="30" />
+        </label>
+        <label class="field">
+          <span>引导强度 cfg</span>
+          <input type="number" name="cfg" value="1.0" min="0.1" max="5" step="0.1" />
+        </label>
+        <label class="field">
+          <span>时序偏移 shift</span>
+          <input type="number" name="shift" value="5.0" min="0" max="20" step="0.1" />
+        </label>
+        <label class="field">
+          <span>随机种子 seed（留空随机）</span>
+          <input type="number" name="seed" placeholder="可选" />
+        </label>
+        <label class="field">
+          <span>并行数 max_parallel</span>
+          <input type="number" name="max_parallel" value="2" min="1" max="8" />
+        </label>
+      </div>
+
+      <button type="submit" id="submit-btn">开始生成</button>
+    </form>
+
+    <section id="status-card" class="card hidden">
+      <h2>任务状态</h2>
+      <p><strong>任务 ID：</strong><span id="job-id">-</span></p>
+      <p><strong>状态：</strong><span id="job-status" class="badge">-</span></p>
+      <p id="job-message">-</p>
+      <pre id="job-error" class="error hidden"></pre>
+      <a id="download-link" class="btn hidden" href="#" download>下载结果视频</a>
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
