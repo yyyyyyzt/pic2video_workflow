@@ -1,0 +1,6 @@
+# RoleSwap 数字人长视频生成封装库依赖
+requests>=2.31.0
+ffmpeg-python>=0.2.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
