@@ -33,11 +33,23 @@ generate_digital_human("performance.mp4", "face.jpg", duration=180,
 
 ## 安装
 
+推荐使用 [uv](https://docs.astral.sh/uv/) 管理依赖与启动（项目已内置 `pyproject.toml` / `uv.lock`）：
+
 ```bash
-pip install -r requirements.txt
+# 安装 uv（若尚未安装）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 同步依赖（自动创建 .venv）
+uv sync
+
 # 需要系统已安装 ffmpeg / ffprobe
 #   Ubuntu/Debian: sudo apt-get install -y ffmpeg
-#   macOS:         brew install ffmpeg
+```
+
+传统 pip 方式（可选）：
+
+```bash
+pip install -r requirements.txt
 ```
 
 ## 配置（不硬编码）
@@ -72,28 +84,27 @@ generate_digital_human(
 或直接运行示例：
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 ### 3) Web 测试页面（Ubuntu 服务器推荐）
 
 提供一个简洁的 Web 界面：上传**表演视频 + 目标人脸**，填写 `duration / steps / cfg / shift / seed / max_parallel`，提交后异步生成并下载结果。适合在 Ubuntu 服务器上稳定联调。
 
-#### 一次性安装（Ubuntu 22.04/24.04）
+#### 一次性安装（Ubuntu 22.04/24.04，uv）
 
 ```bash
 # 1. 系统依赖
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv python3-pip ffmpeg
+sudo apt-get install -y curl ffmpeg
 
-# 2. 进入项目目录
+# 2. 安装 uv（若尚未安装）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env   # 或重新打开终端
+
+# 3. 进入项目目录并同步依赖
 cd /path/to/pic2video_workflow
-
-# 3. 创建虚拟环境并安装依赖
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
+uv sync
 
 # 4. 配置推理 API
 cp .env.example .env
@@ -103,16 +114,15 @@ nano .env   # 填入 ROLESWAP_BASE_URL / ROLESWAP_WORKFLOW_ID
 #### 启动方式 A：开发调试（本机快速验证）
 
 ```bash
-source .venv/bin/activate
-export $(grep -v '^#' .env | xargs)   # 加载环境变量（可选）
-python -m web.app
+uv run python -m web
+# 或
+uv run roleswap-web
 # 浏览器访问 http://<服务器IP>:7860
 ```
 
 #### 启动方式 B：生产稳定运行（gunicorn，推荐）
 
 ```bash
-source .venv/bin/activate
 chmod +x scripts/start_web.sh
 ./scripts/start_web.sh
 ```
@@ -120,8 +130,7 @@ chmod +x scripts/start_web.sh
 等价手动命令：
 
 ```bash
-source .venv/bin/activate
-gunicorn --bind 0.0.0.0:7860 --workers 1 --threads 4 --timeout 3600 web.app:app
+uv run gunicorn --bind 0.0.0.0:7860 --workers 1 --threads 4 --timeout 3600 web.app:app
 ```
 
 > **注意**：长视频任务耗时很长，且任务状态保存在内存中，请将 `--workers` 保持为 **1**。
@@ -130,7 +139,6 @@ gunicorn --bind 0.0.0.0:7860 --workers 1 --threads 4 --timeout 3600 web.app:app
 #### 后台常驻（nohup）
 
 ```bash
-source .venv/bin/activate
 nohup ./scripts/start_web.sh > roleswap_web.log 2>&1 &
 echo $! > roleswap_web.pid
 # 查看日志：tail -f roleswap_web.log
@@ -151,7 +159,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/path/to/pic2video_workflow
 EnvironmentFile=/path/to/pic2video_workflow/.env
-ExecStart=/path/to/pic2video_workflow/.venv/bin/gunicorn --bind 0.0.0.0:7860 --workers 1 --threads 4 --timeout 3600 web.app:app
+ExecStart=/bin/bash -lc 'cd /path/to/pic2video_workflow && ./scripts/start_web.sh'
 Restart=on-failure
 RestartSec=5
 
@@ -254,8 +262,12 @@ web/
   job_store.py         # 内存任务状态
   templates/index.html
   static/              # 样式与前端脚本
-scripts/start_web.sh   # Ubuntu 启动脚本（gunicorn）
+scripts/
+  start_web.sh         # uv + gunicorn 启动 Web
+  sync.sh              # uv sync 同步依赖
 main.py                # 5 行使用示例
-requirements.txt
+pyproject.toml         # 项目依赖（uv 源）
+uv.lock                # uv 锁定文件
+requirements.txt       # pip 兼容（可选）
 .env.example
 ```

@@ -1,3 +1,34 @@
+[project]
+name = "roleswap"
+version = "0.1.0"
+description = "角色替换（数字人）长视频生成封装库"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31.0",
+    "ffmpeg-python>=0.2.0",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    "python-dotenv>=1.0.0",
+    "flask>=3.0.0",
+    "gunicorn>=22.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+roleswap-web = "web.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["roleswap", "web"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

@@ -1,3 +1,8 @@
+# 此文件由 pyproject.toml 维护，推荐使用 uv 管理依赖：
+#   uv sync
+# 若仍需 pip 兼容安装，可执行：
+#   uv export --no-hashes -o requirements.txt && pip install -r requirements.txt
+
 # RoleSwap 数字人长视频生成封装库依赖
 requests>=2.31.0
 ffmpeg-python>=0.2.0
