@@ -1,22 +1,19 @@
-"""RoleSwap Web 测试页面 —— 上传视频/人脸、简单调参、异步生成与下载。
-
-Ubuntu 服务器推荐用 gunicorn 启动（见 README「Web 测试页面」章节）。
-"""
+"""RoleSwap Web 测试页面 —— 上传视频/人脸、后台任务、持久化状态查询。"""
 
 from __future__ import annotations
 
 import os
-import threading
-import traceback
+import subprocess
+import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
-from roleswap import generate_digital_human
 from roleswap.workflow_template import FRAME_LOAD_CAP
 from web.forms import parse_workflow_options, validate_workflow_options
-from web.job_store import JobStore
+from web.job_store import JobStore, is_pid_alive, recover_stale_jobs
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = ROOT_DIR / "web_uploads"
@@ -26,6 +23,25 @@ ALLOWED_VIDEO = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 ALLOWED_IMAGE = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 job_store = JobStore()
+
+
+def _spawn_worker(job_id: str) -> int:
+    """启动独立后台 worker 进程（与 Web 请求生命周期解耦）。"""
+    log_path = job_store.log_path(job_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
+    cmd = [sys.executable, "-m", "web.worker", "run", job_id]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ROOT_DIR),
+        stdin=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=os.environ.copy(),
+    )
+    job_store.update(job_id, worker_pid=proc.pid, status="pending", message="已提交后台任务")
+    return proc.pid
 
 
 def create_app() -> Flask:
@@ -38,6 +54,7 @@ def create_app() -> Flask:
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    recover_stale_jobs(job_store)
 
     @app.get("/")
     def index():
@@ -46,6 +63,14 @@ def create_app() -> Flask:
     @app.get("/health")
     def health():
         return jsonify({"ok": True})
+
+    @app.get("/api/jobs")
+    def list_jobs():
+        recover_stale_jobs(job_store)
+        jobs = job_store.list_jobs(limit=50)
+        return jsonify({
+            "jobs": [_job_to_json(j) for j in jobs],
+        })
 
     @app.post("/api/jobs")
     def create_job():
@@ -77,12 +102,18 @@ def create_app() -> Flask:
         if not (1 <= max_parallel <= 8):
             return jsonify({"error": "max_parallel 建议在 1~8 之间"}), 400
 
-        job = job_store.create()
+        video_name = secure_filename(video.filename or "video.mp4") or "video.mp4"
+        face_name = secure_filename(face.filename or "face.jpg") or "face.jpg"
+
+        job = job_store.create(
+            video_name=video_name,
+            face_name=face_name,
+            duration=duration,
+            manifest={},  # 占位，下面写入真实 manifest
+        )
         job_dir = UPLOAD_DIR / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
 
-        video_name = secure_filename(video.filename or "video.mp4") or "video.mp4"
-        face_name = secure_filename(face.filename or "face.jpg") or "face.jpg"
         video_path = job_dir / video_name
         face_path = job_dir / face_name
         video.save(str(video_path))
@@ -91,44 +122,58 @@ def create_app() -> Flask:
         output_path = OUTPUT_DIR / f"{job.id}.mp4"
         work_dir = job_dir / "work"
 
-        job_store.update(job.id, message="任务已创建，等待处理")
+        manifest = {
+            "video_path": str(video_path),
+            "face_path": str(face_path),
+            "output_path": str(output_path),
+            "work_dir": str(work_dir),
+            "duration": duration,
+            "max_parallel": max_parallel,
+            "resume": True,
+            "workflow_options": asdict(workflow_options),
+        }
+        job_store._write_manifest(job.id, manifest)
 
-        thread = threading.Thread(
-            target=_run_job,
-            kwargs={
-                "job_id": job.id,
-                "video_path": str(video_path),
-                "face_path": str(face_path),
-                "output_path": str(output_path),
-                "work_dir": str(work_dir),
-                "duration": duration,
-                "max_parallel": max_parallel,
-                "workflow_options": workflow_options,
-            },
-            daemon=True,
+        pid = _spawn_worker(job.id)
+        job_store.update(
+            job.id,
+            status="pending",
+            message="任务已提交后台，可关闭页面稍后查看",
+            worker_pid=pid,
         )
-        thread.start()
 
         return jsonify({"job_id": job.id, "status": "pending"})
 
     @app.get("/api/jobs/<job_id>")
     def get_job(job_id: str):
+        recover_stale_jobs(job_store)
         job = job_store.get(job_id)
         if not job:
             return jsonify({"error": "任务不存在"}), 404
-        return jsonify({
-            "job_id": job.id,
-            "status": job.status,
-            "message": job.message,
-            "error": job.error,
-            "download_url": (
-                url_for("download_result", job_id=job.id)
-                if job.status == "completed" and job.output_path
-                else None
-            ),
-            "created_at": job.created_at,
-            "updated_at": job.updated_at,
-        })
+        data = _job_to_json(job)
+        data["log_tail"] = job_store.read_log_tail(job_id, lines=60)
+        return jsonify(data)
+
+    @app.post("/api/jobs/<job_id>/resume")
+    def resume_job(job_id: str):
+        """继续失败/中断的任务（断点续传）。"""
+        job = job_store.get(job_id)
+        if not job:
+            return jsonify({"error": "任务不存在"}), 404
+        if job.status in {"running", "pending"} and is_pid_alive(job.worker_pid):
+            return jsonify({"error": "任务仍在运行中"}), 400
+        if job.status == "completed":
+            return jsonify({"error": "任务已完成"}), 400
+
+        pid = _spawn_worker(job_id)
+        job_store.update(
+            job_id,
+            status="pending",
+            message="已重新提交后台任务（断点续传）",
+            worker_pid=pid,
+            error=None,
+        )
+        return jsonify({"job_id": job_id, "status": "pending", "worker_pid": pid})
 
     @app.get("/download/<job_id>")
     def download_result(job_id: str):
@@ -147,46 +192,29 @@ def create_app() -> Flask:
     return app
 
 
-def _run_job(
-    *,
-    job_id: str,
-    video_path: str,
-    face_path: str,
-    output_path: str,
-    work_dir: str,
-    duration: int,
-    max_parallel: int,
-    workflow_options,
-) -> None:
-    job_store.update(job_id, status="running", message="正在生成，请耐心等待…")
-    try:
-        result = generate_digital_human(
-            video=video_path,
-            face=face_path,
-            duration=duration,
-            output_path=output_path,
-            steps=workflow_options.steps,
-            cfg=workflow_options.cfg,
-            shift=workflow_options.shift,
-            seed=workflow_options.seed,
-            max_parallel=max_parallel,
-            work_dir=work_dir,
-            resume=True,
-            workflow_options=workflow_options,
-        )
-        job_store.update(
-            job_id,
-            status="completed",
-            message="生成完成，可下载结果",
-            output_path=result,
-        )
-    except Exception as exc:  # noqa: BLE001
-        job_store.update(
-            job_id,
-            status="failed",
-            message="生成失败",
-            error=f"{exc}\n{traceback.format_exc()}",
-        )
+def _job_to_json(job) -> dict:
+    progress = 0.0
+    if job.segments_total > 0:
+        progress = round(job.segments_done / job.segments_total * 100, 1)
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "message": job.message,
+        "error": job.error,
+        "video_name": job.video_name,
+        "face_name": job.face_name,
+        "duration": job.duration,
+        "segments_done": job.segments_done,
+        "segments_total": job.segments_total,
+        "progress_percent": progress,
+        "failed_segments": job.failed_segments,
+        "worker_pid": job.worker_pid,
+        "download_url": (
+            f"/download/{job.id}" if job.status == "completed" and job.output_path else None
+        ),
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
 
 
 app = create_app()

@@ -14,12 +14,14 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from . import video_utils as vu
 from . import workflow_template as wf
 from .client import RoleSwapClient, RoleSwapError
 from .workflow_template import WorkflowOptions
+
+ProgressCallback = Callable[[str, dict], None]
 
 
 @dataclass
@@ -89,6 +91,7 @@ class LongVideoProcessor:
         duration_seconds: Optional[int] = None,
         work_dir: Optional[str] = None,
         resume: bool = True,
+        on_progress: Optional[ProgressCallback] = None,
     ) -> str:
         """处理整段长视频，返回最终 MP4 路径。
 
@@ -151,7 +154,14 @@ class LongVideoProcessor:
             state_path, segments_plan, resume=resume, work_dir=work_dir
         )
 
+        self._report_progress(
+            on_progress,
+            f"规划完成：共 {len(states)} 段",
+            states,
+        )
+
         # 预解析人脸输入（本地文件只上传一次，各段复用同一引用）
+        self._report_progress(on_progress, "正在解析/上传人脸素材…", states)
         resolved_face = self.client._resolve_input(face_image, kind="image")
 
         print(
@@ -161,6 +171,7 @@ class LongVideoProcessor:
         )
 
         # 1) 抽取所有尚未完成片段的输入短视频
+        self._report_progress(on_progress, "正在切分视频片段…", states)
         for st in states:
             if st.status == "done" and st.output_path and os.path.exists(st.output_path):
                 continue
@@ -186,6 +197,7 @@ class LongVideoProcessor:
                 work_dir=work_dir,
                 state_path=state_path,
                 states=states,
+                on_progress=on_progress,
             )
 
         # 校验全部完成
@@ -199,6 +211,7 @@ class LongVideoProcessor:
         # 3) crossfade 拼接所有片段输出
         ordered_outputs = [st.output_path for st in sorted(states, key=lambda s: s.index)]
         merged_silent = os.path.join(work_dir, "merged_silent.mp4")
+        self._report_progress(on_progress, "正在 crossfade 拼接片段…", states)
         print("[RoleSwap] 正在按重叠帧 crossfade 拼接片段 ...")
         vu.crossfade_concat(
             segment_paths=ordered_outputs,  # type: ignore[arg-type]
@@ -208,13 +221,34 @@ class LongVideoProcessor:
         )
 
         # 4) 提取原始音频并合并回最终视频
+        self._report_progress(on_progress, "正在合并原始音频…", states)
         print("[RoleSwap] 正在提取并合并原始音频 ...")
         audio_path = os.path.join(work_dir, "audio.aac")
         extracted = vu.extract_audio(video, audio_path)
         vu.mux_audio(merged_silent, extracted, output_path)
 
         print(f"[RoleSwap] 完成：{output_path}")
+        self._report_progress(on_progress, "全部完成", states)
         return output_path
+
+    @staticmethod
+    def _report_progress(
+        on_progress: Optional[ProgressCallback],
+        message: str,
+        states: List[SegmentState],
+    ) -> None:
+        if not on_progress:
+            return
+        done = sum(1 for s in states if s.status == "done")
+        failed = [s.index for s in states if s.status == "failed"]
+        on_progress(
+            message,
+            {
+                "segments_done": done,
+                "segments_total": len(states),
+                "failed_segments": failed,
+            },
+        )
 
     # ------------------------------------------------------------------ #
     # 片段处理（含重试）
@@ -284,6 +318,7 @@ class LongVideoProcessor:
         work_dir: str,
         state_path: str,
         states: List[SegmentState],
+        on_progress: Optional[ProgressCallback] = None,
     ) -> None:
         """按 max_parallel 有限并行地处理待办片段。"""
         max_parallel = max(1, int(params.max_parallel))
@@ -292,6 +327,11 @@ class LongVideoProcessor:
             for st in pending:
                 self._process_one(st, resolved_face, params, work_dir)
                 self._save_state(state_path, states)
+                self._report_progress(
+                    on_progress,
+                    f"片段进度 {sum(1 for s in states if s.status == 'done')}/{len(states)}",
+                    states,
+                )
             return
 
         with ThreadPoolExecutor(max_workers=max_parallel) as pool:
@@ -302,8 +342,13 @@ class LongVideoProcessor:
                 for st in pending
             }
             for fut in as_completed(futures):
-                fut.result()  # 异常已在 _process_one 内吞掉并记录到 state
+                fut.result()
                 self._save_state(state_path, states)
+                self._report_progress(
+                    on_progress,
+                    f"片段进度 {sum(1 for s in states if s.status == 'done')}/{len(states)}",
+                    states,
+                )
 
     # ------------------------------------------------------------------ #
     # 断点续传：状态持久化

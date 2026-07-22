@@ -10,11 +10,21 @@
   <div class="container">
     <header>
       <h1>RoleSwap 数字人测试台</h1>
-      <p>上传表演视频 + 目标人脸，调整工作流参数后提交。参数将映射到 ComfyUI 节点 input_values。</p>
+      <p>任务在<strong>服务器后台</strong>执行，关闭页面或断网不影响生成。可随时回来查看进度。</p>
     </header>
 
+    <section class="card">
+      <div class="section-header">
+        <h2>任务列表</h2>
+        <button type="button" id="refresh-jobs-btn" class="btn-secondary">刷新</button>
+      </div>
+      <div id="jobs-list" class="jobs-list">
+        <p class="muted">加载中…</p>
+      </div>
+    </section>
+
     <form id="job-form" class="card">
-      <h2 class="section-title">素材</h2>
+      <h2 class="section-title">新建任务</h2>
       <div class="grid-2">
         <label class="field">
           <span>表演视频 *（节点 46:video）</span>
@@ -26,7 +36,6 @@
         </label>
       </div>
 
-      <h2 class="section-title">基础参数</h2>
       <div class="grid-3">
         <label class="field">
           <span>工作流模式（节点 151:value）</span>
@@ -99,16 +108,24 @@
         </label>
       </details>
 
-      <button type="submit" id="submit-btn">开始生成</button>
+      <button type="submit" id="submit-btn">提交后台任务</button>
     </form>
 
     <section id="status-card" class="card hidden">
-      <h2>任务状态</h2>
+      <h2>当前任务详情</h2>
       <p><strong>任务 ID：</strong><span id="job-id">-</span></p>
       <p><strong>状态：</strong><span id="job-status" class="badge">-</span></p>
       <p id="job-message">-</p>
+      <div class="progress-wrap hidden" id="progress-wrap">
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+        <p class="muted" id="progress-text">0 / 0 段</p>
+      </div>
+      <pre id="job-log" class="log hidden"></pre>
       <pre id="job-error" class="error hidden"></pre>
-      <a id="download-link" class="btn hidden" href="#" download>下载结果视频</a>
+      <div class="actions">
+        <a id="download-link" class="btn hidden" href="#" download>下载结果视频</a>
+        <button type="button" id="resume-btn" class="btn-secondary hidden">继续任务（断点续传）</button>
+      </div>
     </section>
   </div>
 

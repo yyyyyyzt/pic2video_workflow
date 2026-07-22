@@ -10,7 +10,7 @@ from typing import Optional
 
 from .client import RoleSwapClient
 from .config import RoleSwapConfig
-from .long_video import LongVideoProcessor, ProcessorParams
+from .long_video import LongVideoProcessor, ProcessorParams, ProgressCallback
 from .workflow_template import WorkflowOptions
 
 
@@ -31,6 +31,7 @@ def generate_digital_human(
     resume: bool = True,
     config: Optional[RoleSwapConfig] = None,
     workflow_options: Optional[WorkflowOptions] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> str:
     """把表演视频中的人脸替换为目标人脸，生成指定时长的数字人长视频。
 
@@ -93,4 +94,5 @@ def generate_digital_human(
         duration_seconds=duration,
         work_dir=work_dir,
         resume=resume,
+        on_progress=on_progress,
     )
