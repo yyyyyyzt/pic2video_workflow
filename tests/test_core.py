@@ -48,24 +48,42 @@ def test_build_payload_fixed_params():
         image="http://x/f.jpg",
         seed=42,
     )
-    params = payload["params"]
-    # 固定参数写死
-    assert params["blocks_to_swap"] == 40
-    assert params["tile_x"] == 272
-    assert params["precision"] == "bf16"
-    assert params["frame_load_cap"] == wf.FRAME_LOAD_CAP
-    # 用户参数注入
-    assert params["seed"] == 42
-    assert params["steps"] == 6
+    values = payload["input_values"]
     assert payload["workflow_id"] == "wf-1"
+    # 固定参数写死
+    assert values["51:blocks_to_swap"] == 40
+    assert values["61:tile_x"] == 272
+    assert values["50:precision"] == "bf16"
+    assert values["125:value"] == wf.FRAME_LOAD_CAP
+    # 用户参数注入
+    assert values["42:seed"] == 42
+    assert values["42:steps"] == 6
+    assert values["46:video"] == "http://x/v.mp4"
+    assert values["47:image"] == "http://x/f.jpg"
+    assert values["151:value"] is False  # 默认角色替换
     print("build_payload OK")
+
+
+def test_build_payload_mode_motion_transfer():
+    opts = wf.WorkflowOptions(mode="motion_transfer", positive_prompt="test")
+    payload = wf.build_payload(
+        workflow_id="wf-1",
+        video="v",
+        image="i",
+        seed=1,
+        options=opts,
+    )
+    values = payload["input_values"]
+    assert values["151:value"] is True
+    assert values["56:positive_prompt"] == "test"
+    print("build_payload mode OK")
 
 
 def test_frame_cap_guard():
     try:
         wf.build_payload(
             workflow_id="w", video="v", image="i", seed=1,
-            frame_load_cap=200,
+            num_frames=200,
         )
     except ValueError:
         print("frame_load_cap guard OK")
@@ -136,6 +154,7 @@ if __name__ == "__main__":
     test_plan_segments_overlap()
     test_plan_segments_last_short()
     test_build_payload_fixed_params()
+    test_build_payload_mode_motion_transfer()
     test_frame_cap_guard()
     test_end_to_end_local_pipeline()
     print("\nALL TESTS PASSED")

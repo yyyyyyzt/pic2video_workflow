@@ -23,11 +23,15 @@ from .client import RoleSwapClient
 from .config import RoleSwapConfig
 from .facade import generate_digital_human
 from .long_video import LongVideoProcessor
+from .workflow_template import FRAME_LOAD_CAP, MODEL_CONTEXT_FRAMES, WorkflowOptions
 
 __all__ = [
     "RoleSwapConfig",
     "RoleSwapClient",
     "LongVideoProcessor",
+    "WorkflowOptions",
+    "FRAME_LOAD_CAP",
+    "MODEL_CONTEXT_FRAMES",
     "generate_digital_human",
 ]
 

@@ -14,9 +14,10 @@ from flask import Flask, jsonify, redirect, render_template, request, send_file,
 from werkzeug.utils import secure_filename
 
 from roleswap import generate_digital_human
+from roleswap.workflow_template import FRAME_LOAD_CAP
+from web.forms import parse_workflow_options, validate_workflow_options
 from web.job_store import JobStore
 
-# 项目根目录（web/app.py 的上级）
 ROOT_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = ROOT_DIR / "web_uploads"
 OUTPUT_DIR = ROOT_DIR / "web_outputs"
@@ -40,7 +41,7 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", frame_load_cap=FRAME_LOAD_CAP)
 
     @app.get("/health")
     def health():
@@ -62,23 +63,17 @@ def create_app() -> Flask:
 
         try:
             duration = int(request.form.get("duration", 60))
-            steps = int(request.form.get("steps", 6))
-            cfg = float(request.form.get("cfg", 1.0))
-            shift = float(request.form.get("shift", 5.0))
             max_parallel = int(request.form.get("max_parallel", 2))
-            seed_raw = request.form.get("seed", "").strip()
-            seed = int(seed_raw) if seed_raw else None
+            workflow_options = parse_workflow_options(request.form)
         except (TypeError, ValueError):
             return jsonify({"error": "参数格式错误，请检查数字字段"}), 400
 
+        wf_err = validate_workflow_options(workflow_options)
+        if wf_err:
+            return jsonify({"error": wf_err}), 400
+
         if duration < 1 or duration > 600:
             return jsonify({"error": "duration 建议在 1~600 秒之间"}), 400
-        if not (1 <= steps <= 30):
-            return jsonify({"error": "steps 建议在 1~30 之间"}), 400
-        if not (0.1 <= cfg <= 5.0):
-            return jsonify({"error": "cfg 建议在 0.1~5.0 之间"}), 400
-        if not (0.0 <= shift <= 20.0):
-            return jsonify({"error": "shift 建议在 0~20 之间"}), 400
         if not (1 <= max_parallel <= 8):
             return jsonify({"error": "max_parallel 建议在 1~8 之间"}), 400
 
@@ -107,11 +102,8 @@ def create_app() -> Flask:
                 "output_path": str(output_path),
                 "work_dir": str(work_dir),
                 "duration": duration,
-                "steps": steps,
-                "cfg": cfg,
-                "shift": shift,
-                "seed": seed,
                 "max_parallel": max_parallel,
+                "workflow_options": workflow_options,
             },
             daemon=True,
         )
@@ -163,11 +155,8 @@ def _run_job(
     output_path: str,
     work_dir: str,
     duration: int,
-    steps: int,
-    cfg: float,
-    shift: float,
-    seed: int | None,
     max_parallel: int,
+    workflow_options,
 ) -> None:
     job_store.update(job_id, status="running", message="正在生成，请耐心等待…")
     try:
@@ -176,13 +165,14 @@ def _run_job(
             face=face_path,
             duration=duration,
             output_path=output_path,
-            steps=steps,
-            cfg=cfg,
-            shift=shift,
-            seed=seed,
+            steps=workflow_options.steps,
+            cfg=workflow_options.cfg,
+            shift=workflow_options.shift,
+            seed=workflow_options.seed,
             max_parallel=max_parallel,
             work_dir=work_dir,
             resume=True,
+            workflow_options=workflow_options,
         )
         job_store.update(
             job_id,
@@ -190,7 +180,7 @@ def _run_job(
             message="生成完成，可下载结果",
             output_path=result,
         )
-    except Exception as exc:  # noqa: BLE001 - Web 层需要兜底展示错误
+    except Exception as exc:  # noqa: BLE001
         job_store.update(
             job_id,
             status="failed",

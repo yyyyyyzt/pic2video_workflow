@@ -204,19 +204,27 @@ client.download(url, "clip_swapped.mp4")
 
 ## 暴露给用户的核心参数
 
-| 参数 | 类型 | 默认 | 说明 |
+| 参数 | 节点字段 | 默认 | 说明 |
 | :-- | :-- | :-- | :-- |
-| `video` | str | — | 表演视频（URL / base64 / 本地路径） |
-| `face` / `image` | str | — | 目标人脸（URL / base64 / 本地路径） |
-| `steps` | int | 6 | 采样步数（推荐 6~10） |
-| `cfg` | float | 1.0 | 提示词引导强度（推荐 1.0~1.2） |
-| `shift` | float | 5.0 | 时序偏移量（推荐 5~8） |
-| `seed` | int | 随机 | 随机种子（长视频各段自动固定同值） |
-| `duration` | int | 180 | 目标输出时长（秒） |
+| `video` | `46:video` | — | 表演视频 |
+| `face` / `image` | `47:image` | — | 目标人脸 |
+| `mode` | `151:value` | `role_swap` | `role_swap`=角色替换(False)，`motion_transfer`=动作迁移(True) |
+| `steps` | `42:steps` | 6 | 采样步数 |
+| `cfg` | `42:cfg` | 1.0 | 引导强度 |
+| `shift` | `42:shift` | 5.0 | 时序偏移 |
+| `seed` | `42:seed` | 随机 | 随机种子 |
+| `frame_load_cap` | `125:value` | 121 | 单段帧数上限 |
+| `output_width` | `123:value` | 896 | 输出宽度 |
+| `fps` | `124:value` | 24 | 帧率 |
+| `positive_prompt` | `56:positive_prompt` | "" | 正向提示词 |
+| `negative_prompt` | `56:negative_prompt` | 内置 | 负向提示词 |
+| `pose_strength` | `159:pose_strength` | 1.0 | 姿态强度 |
+| `ref_strength` | `159:ref_strength` | 1.0 | 参考强度 |
+| `duration` | — | 180 | 长视频目标时长（秒，本地分段） |
 
-> 与模型精度 / 显存 / 输出格式相关的大量固定参数（`blocks_to_swap=40`、
-> `tile_x=272`、`precision="bf16"`、`frame_load_cap=121` 等）已写死在
-> `roleswap/workflow_template.py`，用户无需感知。
+> API 请求体格式为 ``{"workflow_id": "...", "input_values": {"42:steps": 6, ...}}``。
+> 其余节点参数已写死在 ``roleswap/workflow_template.py`` 的 ``DEFAULT_INPUT_VALUES`` 中。
+> Web 测试台已暴露上述可调字段，并支持在「高级工作流参数」中修改。
 
 ---
 

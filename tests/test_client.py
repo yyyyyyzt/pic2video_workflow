@@ -70,8 +70,10 @@ def test_submit_builds_payload_and_returns_prompt_id():
     assert url.endswith("/api/workflow/generate")
     body = kwargs["json"]
     assert body["workflow_id"] == "wf-1"
-    assert body["params"]["seed"] == 7
-    assert body["params"]["blocks_to_swap"] == 40  # 固定参数存在
+    values = body["input_values"]
+    assert values["42:seed"] == 7
+    assert values["51:blocks_to_swap"] == 40
+    assert values["151:value"] is False
     print("submit OK")
 
 

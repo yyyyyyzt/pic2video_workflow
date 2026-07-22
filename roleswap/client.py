@@ -119,6 +119,9 @@ class RoleSwapClient:
         shift: float = 5.0,
         seed: Optional[int] = None,
         frame_load_cap: int = wf.FRAME_LOAD_CAP,
+        *,
+        options: Optional[wf.WorkflowOptions] = None,
+        num_frames: Optional[int] = None,
     ) -> str:
         """提交单段换脸任务，返回 ``prompt_id``。
 
@@ -129,11 +132,16 @@ class RoleSwapClient:
         face_image:
             目标人脸照片（公网 URL / base64 / 本地路径；本地路径将自动上传）。
         steps, cfg, shift:
-            采样相关参数，见 workflow_template.build_payload。
+            采样相关参数（若提供 ``options`` 则以 options 为准）。
         seed:
             随机种子。为 ``None`` 时自动生成。长视频建议固定同一值。
         frame_load_cap:
-            单次加载帧数上限，默认 121（工作流硬上限）。
+            单次加载帧数上限（节点 125:value），默认 121。
+        options:
+            完整工作流可调参数（模式、提示词、强度等）。提供后会与 steps/cfg/shift
+            合并，其中显式传入的 steps/cfg/shift 优先。
+        num_frames:
+            本次推理实际帧数（写入 125:value）。长视频分段时传入片段帧数。
         """
         if seed is None:
             seed = random.randint(0, 2**32 - 1)
@@ -141,15 +149,23 @@ class RoleSwapClient:
         resolved_video = self._resolve_input(video, kind="video")
         resolved_image = self._resolve_input(face_image, kind="image")
 
+        wf_opts = options or wf.WorkflowOptions()
+        wf_opts.steps = steps
+        wf_opts.cfg = cfg
+        wf_opts.shift = shift
+        wf_opts.seed = seed
+        if num_frames is None:
+            wf_opts.frame_load_cap = frame_load_cap
+        else:
+            wf_opts.frame_load_cap = num_frames
+
         payload = wf.build_payload(
             workflow_id=self.config.workflow_id,
             video=resolved_video,
             image=resolved_image,
-            steps=steps,
-            cfg=cfg,
-            shift=shift,
             seed=seed,
-            frame_load_cap=frame_load_cap,
+            options=wf_opts,
+            num_frames=num_frames or frame_load_cap,
         )
 
         url = self.config.url(self.config.submit_path)

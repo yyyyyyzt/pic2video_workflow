@@ -19,6 +19,7 @@ from typing import List, Optional
 from . import video_utils as vu
 from . import workflow_template as wf
 from .client import RoleSwapClient, RoleSwapError
+from .workflow_template import WorkflowOptions
 
 
 @dataclass
@@ -54,6 +55,8 @@ class ProcessorParams:
     fps: int = 24
     # 单段失败最大重试次数
     max_retries: int = 3
+    # ComfyUI 工作流可调参数（模式、提示词、强度等）
+    workflow_options: Optional[WorkflowOptions] = None
 
 
 class LongVideoProcessor:
@@ -230,13 +233,24 @@ class LongVideoProcessor:
         for attempt in range(1, params.max_retries + 1):
             st.attempts = attempt
             try:
+                seg_frames = st.end - st.start
+                wf_opts = params.workflow_options or WorkflowOptions()
+                wf_opts.steps = params.steps
+                wf_opts.cfg = params.cfg
+                wf_opts.shift = params.shift
+                wf_opts.seed = params.seed
+                wf_opts.fps = params.fps
+                wf_opts.skip_first_frames = 0  # 已上传裁剪后的片段
+
                 prompt_id = self.client.submit(
-                    video=st.input_path,  # 已是本地文件，submit 内部会自动上传
+                    video=st.input_path,
                     face_image=resolved_face,
                     steps=params.steps,
                     cfg=params.cfg,
                     shift=params.shift,
                     seed=params.seed,
+                    options=wf_opts,
+                    num_frames=seg_frames,
                 )
                 st.prompt_id = prompt_id
                 output_url = self.client.wait_for_result(prompt_id)
