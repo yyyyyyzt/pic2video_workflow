@@ -28,11 +28,16 @@ MODEL_CONTEXT_FRAMES = 81
 MODE_ROLE_SWAP = False
 MODE_MOTION_TRANSFER = True
 
+DEFAULT_POSITIVE_PROMPT = (
+    "纯色背景，干净简洁的背景，人物边缘清晰，无白边，无光晕，"
+    "自然融合，高质量，细节清晰，肤色自然"
+)
+
 DEFAULT_NEGATIVE_PROMPT = (
     "色调艳丽，过曝，静态，细节模糊不清，字幕，画面，静止，整体发灰，最差质量，"
     "低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，"
     "画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，"
-    "杂乱的背景，三条腿，背景人很多，倒着走"
+    "杂乱的背景，三条腿，背景人很多，倒着走，白边，光晕，抠图瑕疵，背景残留"
 )
 
 # ---------------------------------------------------------------------------
@@ -220,7 +225,7 @@ class WorkflowOptions:
     fps: int = 24
     # 视频起始帧跳过（节点 46:skip_first_frames，长视频分段时由处理器设置）
     skip_first_frames: int = 0
-    positive_prompt: str = ""
+    positive_prompt: str = field(default_factory=lambda: DEFAULT_POSITIVE_PROMPT)
     negative_prompt: str = field(default_factory=lambda: DEFAULT_NEGATIVE_PROMPT)
     pose_strength: float = 1.0
     ref_strength: float = 1.0
