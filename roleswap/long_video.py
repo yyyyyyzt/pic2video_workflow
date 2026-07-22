@@ -62,6 +62,8 @@ class ProcessorParams:
     max_retries: int = 3
     # ComfyUI 工作流可调参数（模式、提示词、强度等）
     workflow_options: Optional[WorkflowOptions] = None
+    # 切片模式：normal=默认 | single=不切片调试 | halves=切2段调试
+    slice_mode: str = wf.SLICE_MODE_NORMAL
 
 
 class LongVideoProcessor:
@@ -134,32 +136,48 @@ class LongVideoProcessor:
         if total_frames <= 0:
             raise RoleSwapError("待处理帧数为 0，请检查输入视频。")
 
-        # 每段帧数：由 chunk_seconds 换算，并强制不超过工作流硬上限
-        chunk_frames = int(round(params.chunk_seconds * fps))
-        chunk_frames = min(chunk_frames, wf.FRAME_LOAD_CAP)
-        if chunk_frames <= params.overlap_frames:
+        if params.slice_mode not in wf.VALID_SLICE_MODES:
             raise RoleSwapError(
-                f"chunk_frames({chunk_frames}) 必须大于 overlap_frames"
-                f"({params.overlap_frames})，请调大 chunk_seconds。"
+                f"未知 slice_mode={params.slice_mode!r}，"
+                f"应为 {sorted(wf.VALID_SLICE_MODES)}"
             )
 
-        segments_plan = vu.plan_segments(
+        frame_cap = wf.FRAME_LOAD_CAP
+        if params.workflow_options:
+            frame_cap = int(params.workflow_options.frame_load_cap)
+
+        segments_plan, effective_overlap = vu.plan_segments_for_mode(
             total_frames=total_frames,
-            chunk_frames=chunk_frames,
-            overlap=params.overlap_frames,
+            fps=fps,
+            slice_mode=params.slice_mode,
+            chunk_seconds=params.chunk_seconds,
+            overlap_frames=params.overlap_frames,
+            frame_cap=frame_cap,
         )
+        self._apply_debug_frame_cap(params, segments_plan, total_frames)
+
+        chunk_frames = max((seg.end - seg.start) for seg in segments_plan)
 
         work_dir = work_dir or (os.path.abspath(output_path) + ".roleswap_work")
         os.makedirs(work_dir, exist_ok=True)
         state_path = os.path.join(work_dir, "state.json")
 
         states = self._load_or_init_state(
-            state_path, segments_plan, resume=resume, work_dir=work_dir
+            state_path,
+            segments_plan,
+            resume=resume,
+            work_dir=work_dir,
+            slice_mode=params.slice_mode,
         )
 
+        mode_label = {
+            wf.SLICE_MODE_NORMAL: "正常切片",
+            wf.SLICE_MODE_SINGLE: "调试·不切片",
+            wf.SLICE_MODE_HALVES: "调试·2段",
+        }.get(params.slice_mode, params.slice_mode)
         self._report_progress(
             on_progress,
-            f"规划完成：共 {len(states)} 段",
+            f"规划完成（{mode_label}）：共 {len(states)} 段，{total_frames} 帧",
             states,
         )
 
@@ -168,9 +186,9 @@ class LongVideoProcessor:
         resolved_face = self.client._resolve_input(face_image, kind="image")
 
         print(
-            f"[RoleSwap] 共 {len(states)} 段 | 每段 {chunk_frames} 帧 | "
-            f"重叠 {params.overlap_frames} 帧 | seed={params.seed} | "
-            f"并行 {params.max_parallel}"
+            f"[RoleSwap] 模式={params.slice_mode} | 共 {len(states)} 段 | "
+            f"最长段 {chunk_frames} 帧 | 重叠 {effective_overlap} 帧 | "
+            f"seed={params.seed} | 并行 {params.max_parallel}"
         )
 
         # 1) 抽取所有尚未完成片段的输入短视频
@@ -197,7 +215,7 @@ class LongVideoProcessor:
             for st in states:
                 if st.status == "done" and st.output_path and os.path.exists(st.output_path):
                     st.input_path = os.path.join(work_dir, f"seg_{st.index:04d}_in.mp4")
-        self._save_state(state_path, states)
+        self._save_state(state_path, states, slice_mode=params.slice_mode)
 
         # 兼容：已完成段确保 input_path 存在
         for st in states:
@@ -238,7 +256,7 @@ class LongVideoProcessor:
         print("[RoleSwap] 正在按重叠帧 crossfade 拼接片段 ...")
         vu.crossfade_concat(
             segment_paths=ordered_outputs,  # type: ignore[arg-type]
-            overlap=params.overlap_frames,
+            overlap=effective_overlap,
             output_path=merged_silent,
             fps=float(params.fps),
         )
@@ -253,6 +271,30 @@ class LongVideoProcessor:
         print(f"[RoleSwap] 完成：{output_path}")
         self._report_progress(on_progress, "全部完成", states)
         return output_path
+
+    @staticmethod
+    def _apply_debug_frame_cap(
+        params: ProcessorParams,
+        segments_plan: List[vu.Segment],
+        total_frames: int,
+    ) -> None:
+        """调试切片模式下，自动放宽 frame_load_cap 以匹配整段/长段提交。"""
+        if params.slice_mode == wf.SLICE_MODE_NORMAL:
+            return
+        wf_opts = params.workflow_options
+        if wf_opts is None:
+            return
+        max_seg = max(seg.end - seg.start for seg in segments_plan)
+        needed = max(max_seg, total_frames if params.slice_mode == wf.SLICE_MODE_SINGLE else max_seg)
+        wf_opts.relax_frame_cap = True
+        if wf_opts.frame_load_cap < needed:
+            logger.info(
+                "调试切片模式 %s：frame_load_cap %d -> %d",
+                params.slice_mode,
+                wf_opts.frame_load_cap,
+                needed,
+            )
+            wf_opts.frame_load_cap = needed
 
     @staticmethod
     def _report_progress(
@@ -552,7 +594,7 @@ class LongVideoProcessor:
                 self._process_one(
                     st, resolved_face, params, work_dir, states, on_progress
                 )
-                self._save_state(state_path, states)
+                self._save_state(state_path, states, slice_mode=params.slice_mode)
                 self._report_progress(
                     on_progress,
                     f"片段完成 {sum(1 for s in states if s.status == 'done')}/{len(states)}",
@@ -575,7 +617,7 @@ class LongVideoProcessor:
             }
             for fut in as_completed(futures):
                 fut.result()
-                self._save_state(state_path, states)
+                self._save_state(state_path, states, slice_mode=params.slice_mode)
                 self._report_progress(
                     on_progress,
                     f"片段进度 {sum(1 for s in states if s.status == 'done')}/{len(states)}",
@@ -591,6 +633,7 @@ class LongVideoProcessor:
         segments_plan: List[vu.Segment],
         resume: bool,
         work_dir: str,
+        slice_mode: str,
     ) -> List[SegmentState]:
         """加载已有状态（断点续传），或根据切分计划初始化新状态。"""
         planned = {
@@ -602,6 +645,12 @@ class LongVideoProcessor:
             try:
                 with open(state_path, "r", encoding="utf-8") as fh:
                     saved = json.load(fh)
+                if saved.get("slice_mode") not in (None, slice_mode):
+                    print(
+                        f"[RoleSwap] 切片模式已变更（{saved.get('slice_mode')} -> {slice_mode}），"
+                        "忽略旧断点"
+                    )
+                    return [planned[i] for i in sorted(planned.keys())]
                 for item in saved.get("segments", []):
                     idx = item.get("index")
                     if idx in planned:
@@ -632,11 +681,19 @@ class LongVideoProcessor:
         return [planned[i] for i in sorted(planned.keys())]
 
     @staticmethod
-    def _save_state(state_path: str, states: List[SegmentState]) -> None:
+    def _save_state(
+        state_path: str,
+        states: List[SegmentState],
+        *,
+        slice_mode: str,
+    ) -> None:
         tmp = state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(
-                {"segments": [asdict(s) for s in states]},
+                {
+                    "slice_mode": slice_mode,
+                    "segments": [asdict(s) for s in states],
+                },
                 fh,
                 ensure_ascii=False,
                 indent=2,

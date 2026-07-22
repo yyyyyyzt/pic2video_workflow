@@ -41,6 +41,34 @@ def test_plan_segments_last_short():
     print("plan_segments last-short OK")
 
 
+def test_plan_segments_for_mode():
+    single, ov = vu.plan_segments_for_mode(
+        total_frames=288, fps=24, slice_mode="single"
+    )
+    assert len(single) == 1
+    assert single[0].start == 0 and single[0].end == 288
+    assert ov == 0
+
+    halves, ov2 = vu.plan_segments_for_mode(
+        total_frames=288, fps=24, slice_mode="halves", overlap_frames=12
+    )
+    assert len(halves) == 2
+    assert halves[0].start == 0
+    assert halves[1].end == 288
+    assert ov2 == 12
+    print("plan_segments_for_mode OK")
+
+
+def test_build_payload_relaxed_cap():
+    opts = wf.WorkflowOptions(relax_frame_cap=True, frame_load_cap=288)
+    payload = wf.build_payload(
+        workflow_id="wf-1", video="v", image="i", seed=1,
+        options=opts, num_frames=288,
+    )
+    assert payload["input_values"]["125:value"] == 288
+    print("build_payload relaxed cap OK")
+
+
 def test_build_payload_fixed_params():
     payload = wf.build_payload(
         workflow_id="wf-1",
@@ -153,6 +181,8 @@ def test_end_to_end_local_pipeline():
 if __name__ == "__main__":
     test_plan_segments_overlap()
     test_plan_segments_last_short()
+    test_plan_segments_for_mode()
+    test_build_payload_relaxed_cap()
     test_build_payload_fixed_params()
     test_build_payload_mode_motion_transfer()
     test_frame_cap_guard()

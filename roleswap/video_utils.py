@@ -118,6 +118,45 @@ def plan_segments(
     return segments
 
 
+def plan_segments_for_mode(
+    *,
+    total_frames: int,
+    fps: float,
+    slice_mode: str = "normal",
+    chunk_seconds: float = 3.5,
+    overlap_frames: int = 12,
+    frame_cap: int = 121,
+) -> tuple[List[Segment], int]:
+    """按切片模式规划片段，返回 (segments, effective_overlap)。"""
+    if total_frames <= 0:
+        raise ValueError("total_frames 必须为正数")
+
+    if slice_mode == "single":
+        return [Segment(index=0, start=0, end=total_frames)], 0
+
+    if slice_mode == "halves":
+        if total_frames == 1:
+            return [Segment(index=0, start=0, end=1)], 0
+        overlap = min(overlap_frames, max(1, total_frames // 4))
+        mid = total_frames // 2
+        return [
+            Segment(index=0, start=0, end=min(total_frames, mid + overlap)),
+            Segment(index=1, start=max(0, mid - overlap), end=total_frames),
+        ], overlap
+
+    chunk_frames = int(round(chunk_seconds * fps))
+    chunk_frames = min(chunk_frames, frame_cap)
+    if chunk_frames <= overlap_frames:
+        raise ValueError(
+            f"chunk_frames({chunk_frames}) 必须大于 overlap_frames({overlap_frames})"
+        )
+    return plan_segments(
+        total_frames=total_frames,
+        chunk_frames=chunk_frames,
+        overlap=overlap_frames,
+    ), overlap_frames
+
+
 # ---------------------------------------------------------------------------
 # 片段抽取（帧精确）
 # ---------------------------------------------------------------------------

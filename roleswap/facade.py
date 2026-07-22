@@ -27,6 +27,7 @@ def generate_digital_human(
     chunk_seconds: float = 3.5,
     overlap_frames: int = 12,
     max_parallel: int = 2,
+    slice_mode: str = "normal",
     work_dir: Optional[str] = None,
     resume: bool = True,
     config: Optional[RoleSwapConfig] = None,
@@ -55,6 +56,8 @@ def generate_digital_human(
         相邻段重叠帧数（默认 12），用于 crossfade 平滑过渡。
     max_parallel:
         有限并行提交数（默认 2）。
+    slice_mode:
+        切片模式。``normal`` 默认；``single`` 不切片（调试）；``halves`` 仅切 2 段（调试）。
     work_dir:
         中间文件目录；保留即可支持断点续传。
     resume:
@@ -79,6 +82,7 @@ def generate_digital_human(
         chunk_seconds=chunk_seconds,
         overlap_frames=overlap_frames,
         max_parallel=max_parallel,
+        slice_mode=slice_mode,
         steps=steps,
         cfg=cfg,
         shift=shift,

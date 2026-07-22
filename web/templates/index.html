@@ -65,6 +65,14 @@
           <input type="number" name="seed" placeholder="可选" />
         </label>
         <label class="field">
+          <span>切片模式（调试）</span>
+          <select name="slice_mode">
+            <option value="normal" selected>正常切片（长视频）</option>
+            <option value="single">调试：不切片（整段一次提交）</option>
+            <option value="halves">调试：仅切 2 段</option>
+          </select>
+        </label>
+        <label class="field">
           <span>并行数 max_parallel（建议 1，稳定优先）</span>
           <input type="number" name="max_parallel" value="1" min="1" max="8" />
         </label>
@@ -72,10 +80,14 @@
 
       <details class="advanced" open>
         <summary>高级工作流参数（ComfyUI input_values）</summary>
+        <p class="muted subsection-hint">
+          「不切片」调试：选切片模式为「整段一次提交」，duration 设 12，并把下方
+          <strong>单段帧数上限</strong> 调到 ≥288（12s×24fps），与 ComfyUI 画布一致。
+        </p>
         <div class="grid-3">
           <label class="field">
-            <span>单段帧数上限（125:value，≤{{ frame_load_cap }}）</span>
-            <input type="number" name="frame_load_cap" value="{{ frame_load_cap }}" min="1" max="{{ frame_load_cap }}" />
+            <span>单段帧数上限（125:value，正常≤{{ frame_load_cap }}，不切片调试≤{{ debug_frame_load_cap }}）</span>
+            <input type="number" name="frame_load_cap" value="{{ frame_load_cap }}" min="1" max="{{ debug_frame_load_cap }}" />
           </label>
           <label class="field">
             <span>输出宽度（123:value）</span>

@@ -13,6 +13,13 @@ from typing import Any, Dict, Optional
 
 # 单次 API 调用的帧数硬上限（节点 125:value，工作流默认 121 帧 ≈ 5s @24fps）。
 FRAME_LOAD_CAP = 121
+# 调试「不切片」模式允许的最大帧数（约 25s @24fps，需与工作流实际能力一致）
+DEBUG_FRAME_LOAD_CAP = 600
+
+SLICE_MODE_NORMAL = "normal"
+SLICE_MODE_SINGLE = "single"
+SLICE_MODE_HALVES = "halves"
+VALID_SLICE_MODES = {SLICE_MODE_NORMAL, SLICE_MODE_SINGLE, SLICE_MODE_HALVES}
 
 # 模型上下文窗口（节点 43:context_frames，约 3.3s @24fps）。
 MODEL_CONTEXT_FRAMES = 81
@@ -225,6 +232,8 @@ class WorkflowOptions:
     prefix_alpha_crop: bool = False
     detection_threshold: float = 0.5
     ref_background_color: str = "#FFFFFF"
+    # 调试：允许 frame_load_cap 超过 FRAME_LOAD_CAP（配合不切片/少切片）
+    relax_frame_cap: bool = False
     # 允许透传额外节点覆盖（高级用户）
     extra_input_values: Dict[str, Any] = field(default_factory=dict)
 
@@ -264,11 +273,14 @@ def build_payload(
     """
     opts = options or WorkflowOptions()
     frame_cap = num_frames if num_frames is not None else opts.frame_load_cap
+    cap_limit = FRAME_LOAD_CAP
+    if opts.relax_frame_cap:
+        cap_limit = max(DEBUG_FRAME_LOAD_CAP, int(opts.frame_load_cap))
 
-    if frame_cap > FRAME_LOAD_CAP:
+    if frame_cap > cap_limit:
         raise ValueError(
-            f"num_frames/frame_load_cap={frame_cap} 超过工作流硬上限 {FRAME_LOAD_CAP}，"
-            "单次调用无法生成超过约 5 秒的视频。请使用 LongVideoProcessor 分段处理。"
+            f"num_frames/frame_load_cap={frame_cap} 超过上限 {cap_limit}。"
+            f"{'调试模式' if opts.relax_frame_cap else '正常模式'}下请调整 duration 或 frame_load_cap。"
         )
 
     values = copy.deepcopy(DEFAULT_INPUT_VALUES)

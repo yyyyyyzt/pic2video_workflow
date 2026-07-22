@@ -14,6 +14,9 @@ def test_parse_workflow_options_defaults():
     assert opts.steps == 6
     assert opts.frame_load_cap == 121
     assert validate_workflow_options(opts) is None
+    assert validate_workflow_options(opts, slice_mode="single") is None
+    opts2 = parse_workflow_options({"frame_load_cap": "288"})
+    assert validate_workflow_options(opts2, slice_mode="single") is None
     print("parse defaults OK")
 
 

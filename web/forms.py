@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from roleswap.workflow_template import DEFAULT_NEGATIVE_PROMPT, WorkflowOptions
+from roleswap.workflow_template import (
+    DEBUG_FRAME_LOAD_CAP,
+    DEFAULT_NEGATIVE_PROMPT,
+    FRAME_LOAD_CAP,
+    VALID_SLICE_MODES,
+    WorkflowOptions,
+)
 
 
 def _get_int(form: Mapping[str, Any], key: str, default: int) -> int:
@@ -66,8 +72,14 @@ def parse_workflow_options(form: Mapping[str, Any]) -> WorkflowOptions:
     )
 
 
-def validate_workflow_options(opts: WorkflowOptions) -> str | None:
+def validate_workflow_options(
+    opts: WorkflowOptions,
+    *,
+    slice_mode: str = "normal",
+) -> str | None:
     """校验参数范围，返回错误信息或 None。"""
+    if slice_mode not in VALID_SLICE_MODES:
+        return f"slice_mode 应为 {sorted(VALID_SLICE_MODES)} 之一"
     if opts.mode not in {"role_swap", "motion_transfer"}:
         return "mode 应为 role_swap 或 motion_transfer"
     if not (1 <= opts.steps <= 30):
@@ -76,8 +88,9 @@ def validate_workflow_options(opts: WorkflowOptions) -> str | None:
         return "cfg 建议在 0.1~5.0 之间"
     if not (0.0 <= opts.shift <= 20.0):
         return "shift 建议在 0~20 之间"
-    if not (1 <= opts.frame_load_cap <= 121):
-        return "frame_load_cap 建议在 1~121 之间（工作流硬上限）"
+    cap_max = DEBUG_FRAME_LOAD_CAP if slice_mode != "normal" else FRAME_LOAD_CAP
+    if not (1 <= opts.frame_load_cap <= cap_max):
+        return f"frame_load_cap 建议在 1~{cap_max} 之间"
     if not (0 <= opts.output_width <= 4096):
         return "output_width 建议在 0~4096 之间"
     if not (1 <= opts.fps <= 60):

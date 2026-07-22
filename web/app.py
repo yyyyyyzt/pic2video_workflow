@@ -11,7 +11,7 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
-from roleswap.workflow_template import FRAME_LOAD_CAP
+from roleswap.workflow_template import FRAME_LOAD_CAP, DEBUG_FRAME_LOAD_CAP
 from web.forms import parse_workflow_options, validate_workflow_options
 from web.job_store import JobStore, is_pid_alive, recover_stale_jobs
 
@@ -58,7 +58,11 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html", frame_load_cap=FRAME_LOAD_CAP)
+        return render_template(
+            "index.html",
+            frame_load_cap=FRAME_LOAD_CAP,
+            debug_frame_load_cap=DEBUG_FRAME_LOAD_CAP,
+        )
 
     @app.get("/health")
     def health():
@@ -89,11 +93,12 @@ def create_app() -> Flask:
         try:
             duration = int(request.form.get("duration", 60))
             max_parallel = int(request.form.get("max_parallel", 2))
+            slice_mode = str(request.form.get("slice_mode", "normal")).strip() or "normal"
             workflow_options = parse_workflow_options(request.form)
         except (TypeError, ValueError):
             return jsonify({"error": "参数格式错误，请检查数字字段"}), 400
 
-        wf_err = validate_workflow_options(workflow_options)
+        wf_err = validate_workflow_options(workflow_options, slice_mode=slice_mode)
         if wf_err:
             return jsonify({"error": wf_err}), 400
 
@@ -129,6 +134,7 @@ def create_app() -> Flask:
             "work_dir": str(work_dir),
             "duration": duration,
             "max_parallel": max_parallel,
+            "slice_mode": slice_mode,
             "resume": True,
             "workflow_options": asdict(workflow_options),
         }

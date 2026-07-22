@@ -76,6 +76,7 @@ def run_job(job_id: str) -> int:
             shift=wf_opts.shift,
             seed=wf_opts.seed,
             max_parallel=manifest.get("max_parallel", 1),
+            slice_mode=manifest.get("slice_mode", "normal"),
             work_dir=manifest.get("work_dir"),
             resume=manifest.get("resume", True),
             workflow_options=wf_opts,
