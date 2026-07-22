@@ -10,7 +10,7 @@ import os
 import random
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
@@ -30,6 +30,8 @@ _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _DATA_URI_RE = re.compile(r"^data:", re.IGNORECASE)
 
 logger = get_logger("roleswap.client")
+
+PollCallback = Callable[[Dict[str, Any]], None]
 
 
 class RoleSwapError(RuntimeError):
@@ -285,6 +287,7 @@ class RoleSwapClient:
         prompt_id: str,
         timeout: Optional[int] = None,
         poll_interval: Optional[float] = None,
+        on_poll: Optional[PollCallback] = None,
     ) -> str:
         """轮询任务结果，成功后返回输出视频的 URL。
 
@@ -327,6 +330,14 @@ class RoleSwapClient:
             if resp.status_code < 400:
                 data = self._safe_json(resp)
                 status = self._infer_poll_status(data)
+                poll_info = self._build_poll_info(
+                    prompt_id=prompt_id,
+                    data=data,
+                    status=status,
+                    poll_count=poll_count,
+                )
+                if on_poll:
+                    on_poll(poll_info)
 
                 if poll_count == 1 or poll_count % 10 == 0:
                     logger.debug(
@@ -472,14 +483,23 @@ class RoleSwapClient:
 
     @staticmethod
     def _infer_poll_status(data: Dict[str, Any]) -> str:
-        """从结果响应推断轮询状态（兼容 pending 字段）。"""
+        """从结果响应推断轮询状态（兼容 pending / running 等字段）。"""
         raw = str(data.get("status") or data.get("state") or "").lower()
         if raw in {"failed", "error"}:
             return "failed"
         if raw in {"completed", "success", "done"}:
             return "completed"
+        if raw in {"running", "processing", "executing", "in_progress"}:
+            return "running"
+        if raw in {"queued", "in_queue", "waiting", "pending"}:
+            return "pending"
         if data.get("pending") is True:
             return "pending"
+        if data.get("running") is True or data.get("executing") is True:
+            return "running"
+        progress = data.get("progress")
+        if isinstance(progress, (int, float)) and 0 < float(progress) < 1:
+            return "running"
         results = data.get("results")
         if (
             data.get("success") is True
@@ -489,6 +509,123 @@ class RoleSwapClient:
         ):
             return "pending"
         return raw or "unknown"
+
+    def _build_poll_info(
+        self,
+        *,
+        prompt_id: str,
+        data: Dict[str, Any],
+        status: str,
+        poll_count: int,
+    ) -> Dict[str, Any]:
+        queue_hint = None
+        if poll_count % 10 == 0:
+            queue_hint = self._lookup_queue_hint(prompt_id)
+        detail = self._format_poll_detail(
+            data=data,
+            status=status,
+            poll_count=poll_count,
+            queue_hint=queue_hint,
+        )
+        return {
+            "prompt_id": prompt_id,
+            "status": status,
+            "poll_count": poll_count,
+            "detail": detail,
+            "queue_hint": queue_hint,
+            "progress": data.get("progress"),
+            "current_node": data.get("current_node")
+            or data.get("executing_node")
+            or data.get("node"),
+        }
+
+    @staticmethod
+    def _format_poll_detail(
+        *,
+        data: Dict[str, Any],
+        status: str,
+        poll_count: int,
+        queue_hint: Optional[str] = None,
+    ) -> str:
+        label = {
+            "pending": "GPU 排队中",
+            "running": "GPU 推理中",
+            "unknown": "等待远程响应",
+            "completed": "已完成",
+            "failed": "失败",
+        }.get(status, status)
+        parts = [label]
+        if queue_hint:
+            parts.append(queue_hint)
+        progress = data.get("progress")
+        if isinstance(progress, (int, float)):
+            pct = float(progress) * 100 if float(progress) <= 1 else float(progress)
+            if pct > 0:
+                parts.append(f"进度 {pct:.0f}%")
+        for key, label_name in (
+            ("queue_position", "队列位置"),
+            ("queue_remaining", "前方任务"),
+            ("current_node", "节点"),
+            ("executing_node", "节点"),
+        ):
+            val = data.get(key)
+            if val is not None and str(val) != "":
+                parts.append(f"{label_name} {val}")
+        node = data.get("node")
+        if node is not None and "节点" not in " ".join(parts):
+            parts.append(f"节点 {node}")
+        parts.append(f"轮询 #{poll_count}")
+        return "，".join(parts)
+
+    def _lookup_queue_hint(self, prompt_id: str) -> Optional[str]:
+        """尽力查询 ComfyUI 队列，补充排队信息（接口不存在时静默跳过）。"""
+        if not self.config.queue_path:
+            return None
+        try:
+            resp = self.session.get(
+                self.config.url(self.config.queue_path),
+                headers=self._headers(),
+                timeout=min(self.config.http_timeout, 15.0),
+            )
+        except requests.RequestException:
+            return None
+        if resp.status_code >= 400:
+            return None
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        return self._parse_queue_for_prompt(data, prompt_id)
+
+    @staticmethod
+    def _parse_queue_for_prompt(data: Any, prompt_id: str) -> Optional[str]:
+        """从 ComfyUI /queue 响应中查找 prompt 位置。"""
+        if not isinstance(data, dict):
+            return None
+        running = data.get("queue_running") or data.get("running") or []
+        pending = data.get("queue_pending") or data.get("pending") or []
+        if isinstance(running, list):
+            for idx, item in enumerate(running):
+                if RoleSwapClient._queue_item_matches(item, prompt_id):
+                    return f"正在执行（队列运行 #{idx + 1}）"
+        if isinstance(pending, list):
+            for idx, item in enumerate(pending):
+                if RoleSwapClient._queue_item_matches(item, prompt_id):
+                    return f"排队第 {idx + 1} 位（共 {len(pending)} 个待执行）"
+        return None
+
+    @staticmethod
+    def _queue_item_matches(item: Any, prompt_id: str) -> bool:
+        if isinstance(item, (list, tuple)):
+            for part in item:
+                if str(part) == prompt_id:
+                    return True
+            if item and str(item[0]) == prompt_id:
+                return True
+        if isinstance(item, dict):
+            if str(item.get("prompt_id") or item.get("id") or "") == prompt_id:
+                return True
+        return prompt_id in str(item)
 
     def _extract_output_url(self, data: Dict[str, Any]) -> Optional[str]:
         """从结果响应中尽力提取输出视频 URL。

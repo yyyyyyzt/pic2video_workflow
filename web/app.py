@@ -209,6 +209,9 @@ def _job_to_json(job) -> dict:
         "progress_percent": progress,
         "failed_segments": job.failed_segments,
         "segment_errors": job.segment_errors,
+        "current_segment": job.current_segment,
+        "remote_status": job.remote_status,
+        "active_prompt_id": job.active_prompt_id,
         "worker_pid": job.worker_pid,
         "download_url": (
             f"/download/{job.id}" if job.status == "completed" and job.output_path else None

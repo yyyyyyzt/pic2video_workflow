@@ -83,8 +83,32 @@ def test_infer_poll_status_pending():
     assert client._infer_poll_status(
         {"success": True, "pending": True, "results": []}
     ) == "pending"
-    assert client._infer_poll_status({"status": "processing"}) == "processing"
+    assert client._infer_poll_status({"status": "processing"}) == "running"
+    assert client._infer_poll_status({"running": True}) == "running"
     print("infer_poll_status OK")
+
+
+def test_format_poll_detail():
+    client = RoleSwapClient(config=_config())
+    detail = client._format_poll_detail(
+        data={"progress": 0.35, "queue_position": 2},
+        status="running",
+        poll_count=12,
+        queue_hint="排队第 1 位",
+    )
+    assert "GPU 推理中" in detail
+    assert "35%" in detail
+    assert "轮询 #12" in detail
+    print("format_poll_detail OK")
+
+
+def test_parse_queue_for_prompt():
+    data = {
+        "queue_running": [["abc", {"prompt_id": "p1"}]],
+        "queue_pending": [["def"], ["ghi", "p2"]],
+    }
+    assert RoleSwapClient._parse_queue_for_prompt(data, "p2") is not None
+    print("parse_queue OK")
 
 
 def test_wait_for_result_polls_until_done():
@@ -191,6 +215,8 @@ def test_download_writes_file(tmp_path=None):
 if __name__ == "__main__":
     test_submit_builds_payload_and_returns_prompt_id()
     test_infer_poll_status_pending()
+    test_format_poll_detail()
+    test_parse_queue_for_prompt()
     test_wait_for_result_polls_until_done()
     test_wait_for_result_pending_extends_wait()
     test_extract_output_url_variants()

@@ -88,6 +88,21 @@ function renderJobDetail(data) {
   jobStatusEl.textContent = data.status;
   jobStatusEl.className = `badge ${data.status}`;
   jobMessageEl.textContent = data.message || "";
+  const remoteEl = document.getElementById("job-remote-status");
+  if (remoteEl) {
+    const parts = [];
+    if (data.current_segment != null && data.segments_total > 0) {
+      parts.push(`当前段 ${data.current_segment + 1}/${data.segments_total}`);
+    }
+    if (data.remote_status) {
+      parts.push(`远程 ${data.remote_status}`);
+    }
+    if (data.active_prompt_id) {
+      parts.push(`prompt ${String(data.active_prompt_id).slice(0, 8)}…`);
+    }
+    remoteEl.textContent = parts.join(" · ");
+    remoteEl.classList.toggle("hidden", parts.length === 0);
+  }
 
   if (data.segments_total > 0) {
     progressWrap.classList.remove("hidden");

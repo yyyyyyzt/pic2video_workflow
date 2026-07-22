@@ -50,11 +50,20 @@ def run_job(job_id: str) -> int:
     def on_progress(message: str, extra: dict | None = None) -> None:
         extra = extra or {}
         updates: dict = {"message": message}
-        for key in ("segments_done", "segments_total", "failed_segments", "segment_errors"):
+        for key in (
+            "segments_done",
+            "segments_total",
+            "failed_segments",
+            "segment_errors",
+            "current_segment",
+            "remote_status",
+            "active_prompt_id",
+        ):
             if key in extra:
                 updates[key] = extra[key]
         store.update(job_id, **updates)
-        store.append_log(job_id, f"[progress] {message}")
+        if extra.get("log_progress", True):
+            store.append_log(job_id, f"[progress] {message}")
 
     try:
         result = generate_digital_human(

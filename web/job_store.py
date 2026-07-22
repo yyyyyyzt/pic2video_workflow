@@ -34,6 +34,10 @@ class Job:
     # 最近失败片段摘要
     failed_segments: List[int] = field(default_factory=list)
     segment_errors: List[Dict[str, Any]] = field(default_factory=list)
+    # 实时进度（GPU 排队/推理阶段）
+    current_segment: Optional[int] = None
+    remote_status: Optional[str] = None
+    active_prompt_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

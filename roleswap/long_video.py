@@ -174,16 +174,37 @@ class LongVideoProcessor:
         )
 
         # 1) 抽取所有尚未完成片段的输入短视频
-        self._report_progress(on_progress, "正在切分视频片段…", states)
-        for st in states:
-            if st.status == "done" and st.output_path and os.path.exists(st.output_path):
-                continue
-            seg = vu.Segment(index=st.index, start=st.start, end=st.end)
-            seg_input = os.path.join(work_dir, f"seg_{st.index:04d}_in.mp4")
-            if not os.path.exists(seg_input):
-                vu.extract_segment(video, seg, seg_input, fps=params.fps)
-            st.input_path = seg_input
+        to_cut = [
+            st
+            for st in states
+            if not (st.status == "done" and st.output_path and os.path.exists(st.output_path))
+        ]
+        if to_cut:
+            self._report_progress(on_progress, f"正在切分视频片段（共 {len(to_cut)} 段）…", states)
+            for i, st in enumerate(to_cut, start=1):
+                seg = vu.Segment(index=st.index, start=st.start, end=st.end)
+                seg_input = os.path.join(work_dir, f"seg_{st.index:04d}_in.mp4")
+                if not os.path.exists(seg_input):
+                    self._report_progress(
+                        on_progress,
+                        f"切分片段 {i}/{len(to_cut)}（段 {st.index}，帧 {st.start}-{st.end}）",
+                        states,
+                    )
+                    vu.extract_segment(video, seg, seg_input, fps=params.fps)
+                st.input_path = seg_input
+            self._report_progress(on_progress, "切分完成，开始 GPU 推理", states)
+        else:
+            for st in states:
+                if st.status == "done" and st.output_path and os.path.exists(st.output_path):
+                    st.input_path = os.path.join(work_dir, f"seg_{st.index:04d}_in.mp4")
         self._save_state(state_path, states)
+
+        # 兼容：已完成段确保 input_path 存在
+        for st in states:
+            if not st.input_path:
+                candidate = os.path.join(work_dir, f"seg_{st.index:04d}_in.mp4")
+                if os.path.exists(candidate):
+                    st.input_path = candidate
 
         # 2) 并行 / 串行处理各片段（含重试 + 断点续传）
         pending = [
@@ -238,6 +259,11 @@ class LongVideoProcessor:
         on_progress: Optional[ProgressCallback],
         message: str,
         states: List[SegmentState],
+        *,
+        log_progress: bool = True,
+        current_segment: Optional[int] = None,
+        remote_status: Optional[str] = None,
+        active_prompt_id: Optional[str] = None,
     ) -> None:
         if not on_progress:
             return
@@ -248,15 +274,20 @@ class LongVideoProcessor:
             for s in states
             if s.status == "failed" and s.error
         ][:10]
-        on_progress(
-            message,
-            {
-                "segments_done": done,
-                "segments_total": len(states),
-                "failed_segments": failed,
-                "segment_errors": segment_errors,
-            },
-        )
+        extra: dict = {
+            "segments_done": done,
+            "segments_total": len(states),
+            "failed_segments": failed,
+            "segment_errors": segment_errors,
+            "log_progress": log_progress,
+        }
+        if current_segment is not None:
+            extra["current_segment"] = current_segment
+        if remote_status:
+            extra["remote_status"] = remote_status
+        if active_prompt_id:
+            extra["active_prompt_id"] = active_prompt_id
+        on_progress(message, extra)
 
     @staticmethod
     def _format_failure_report(failed: List[SegmentState]) -> str:
@@ -316,6 +347,8 @@ class LongVideoProcessor:
         resolved_face: str,
         params: ProcessorParams,
         work_dir: str,
+        states: List[SegmentState],
+        on_progress: Optional[ProgressCallback] = None,
     ) -> SegmentState:
         """处理单个片段：提交 -> 等待 -> 下载。带重试。"""
         seg_output = os.path.join(work_dir, f"seg_{st.index:04d}_out.mp4")
@@ -334,6 +367,8 @@ class LongVideoProcessor:
             input_size / 1048576,
         )
 
+        seg_label = f"段 {st.index + 1}/{len(states)}"
+
         for attempt in range(1, params.max_retries + 1):
             st.attempts = attempt
             try:
@@ -347,14 +382,23 @@ class LongVideoProcessor:
 
                 # 已有 prompt_id 且上次是排队超时：继续等待，不重复提交
                 if st.prompt_id and attempt > 1:
-                    logger.info(
-                        "段 %d 继续等待已有任务 prompt_id=%s（第 %d 次）",
-                        st.index,
-                        st.prompt_id,
-                        attempt,
+                    self._report_progress(
+                        on_progress,
+                        f"{seg_label}：续等 GPU 任务 {st.prompt_id[:8]}…",
+                        states,
+                        current_segment=st.index,
+                        active_prompt_id=st.prompt_id,
                     )
-                    output_url = self.client.wait_for_result(st.prompt_id)
+                    output_url = self._wait_segment_result(
+                        st, states, on_progress, st.prompt_id
+                    )
                 else:
+                    self._report_progress(
+                        on_progress,
+                        f"{seg_label}：编码素材并提交 GPU…",
+                        states,
+                        current_segment=st.index,
+                    )
                     prompt_id = self.client.submit(
                         video=st.input_path,
                         face_image=resolved_face,
@@ -366,8 +410,17 @@ class LongVideoProcessor:
                         num_frames=seg_frames,
                     )
                     st.prompt_id = prompt_id
-                    output_url = self.client.wait_for_result(prompt_id)
+                    output_url = self._wait_segment_result(
+                        st, states, on_progress, prompt_id
+                    )
 
+                self._report_progress(
+                    on_progress,
+                    f"{seg_label}：下载结果…",
+                    states,
+                    current_segment=st.index,
+                    active_prompt_id=st.prompt_id,
+                )
                 self._download_with_retries(output_url, seg_output)
 
                 st.output_path = seg_output
@@ -436,6 +489,28 @@ class LongVideoProcessor:
         st.error = str(last_err) if last_err else "unknown"
         return st
 
+    def _wait_segment_result(
+        self,
+        st: SegmentState,
+        states: List[SegmentState],
+        on_progress: Optional[ProgressCallback],
+        prompt_id: str,
+    ) -> str:
+        seg_label = f"段 {st.index + 1}/{len(states)}"
+
+        def on_poll(info: dict) -> None:
+            self._report_progress(
+                on_progress,
+                f"{seg_label}：{info.get('detail', info.get('status', '等待中'))}",
+                states,
+                log_progress=False,
+                current_segment=st.index,
+                remote_status=str(info.get("status") or ""),
+                active_prompt_id=prompt_id,
+            )
+
+        return self.client.wait_for_result(prompt_id, on_poll=on_poll)
+
     def _run_segments(
         self,
         pending: List[SegmentState],
@@ -451,11 +526,13 @@ class LongVideoProcessor:
 
         if max_parallel == 1:
             for st in pending:
-                self._process_one(st, resolved_face, params, work_dir)
+                self._process_one(
+                    st, resolved_face, params, work_dir, states, on_progress
+                )
                 self._save_state(state_path, states)
                 self._report_progress(
                     on_progress,
-                    f"片段进度 {sum(1 for s in states if s.status == 'done')}/{len(states)}",
+                    f"片段完成 {sum(1 for s in states if s.status == 'done')}/{len(states)}",
                     states,
                 )
             return
@@ -463,7 +540,13 @@ class LongVideoProcessor:
         with ThreadPoolExecutor(max_workers=max_parallel) as pool:
             futures = {
                 pool.submit(
-                    self._process_one, st, resolved_face, params, work_dir
+                    self._process_one,
+                    st,
+                    resolved_face,
+                    params,
+                    work_dir,
+                    states,
+                    on_progress,
                 ): st
                 for st in pending
             }

@@ -60,6 +60,8 @@ class RoleSwapConfig:
     result_path: str = "/api/workflow/result"
     upload_path: str = "/api/comfy/upload/file"
     view_path: str = "/api/comfy/view"
+    # 可选：ComfyUI 队列查询（用于展示排队位置）
+    queue_path: str = "/api/comfy/queue"
 
     @classmethod
     def from_env(cls) -> "RoleSwapConfig":
@@ -99,6 +101,9 @@ class RoleSwapConfig:
             ).strip(),
             view_path=os.getenv(
                 "ROLESWAP_VIEW_PATH", "/api/comfy/view"
+            ).strip(),
+            queue_path=os.getenv(
+                "ROLESWAP_QUEUE_PATH", "/api/comfy/queue"
             ).strip(),
         )
 
