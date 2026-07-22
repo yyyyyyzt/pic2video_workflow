@@ -311,6 +311,20 @@ class LongVideoProcessor:
         msg = str(exc).lower()
         return "等待超时" in str(exc) or '"pending":true' in msg or "pending': true" in msg
 
+    @staticmethod
+    def _is_workflow_output_error(exc: Exception) -> bool:
+        """工作流本身未产出视频（非网络/超时），重试无意义。"""
+        msg = str(exc)
+        return any(
+            token in msg
+            for token in (
+                "未生成视频",
+                "ComfyUI_temp_",
+                "仅产出临时预览",
+                "视频合成节点",
+            )
+        )
+
     # ------------------------------------------------------------------ #
     # 片段处理（含重试）
     # ------------------------------------------------------------------ #
@@ -441,6 +455,15 @@ class LongVideoProcessor:
                 if st.prompt_id and "下载失败" in str(exc):
                     logger.error(
                         "段 %d 推理已完成但下载失败 prompt_id=%s: %s",
+                        st.index,
+                        st.prompt_id,
+                        exc,
+                    )
+                    break
+                # 工作流未产出视频（仅 temp 图），不要重复提交
+                if self._is_workflow_output_error(exc):
+                    logger.error(
+                        "段 %d 工作流未产出视频 prompt_id=%s: %s",
                         st.index,
                         st.prompt_id,
                         exc,

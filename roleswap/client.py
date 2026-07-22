@@ -364,7 +364,7 @@ class RoleSwapClient:
 
                 if status == "completed":
                     raise RoleSwapError(
-                        f"任务 {prompt_id} 显示完成但未找到输出 URL：{data!r}"
+                        self._format_missing_video_error(prompt_id, data)
                     )
 
                 if status == "pending" and time.time() >= deadline:
@@ -495,6 +495,8 @@ class RoleSwapClient:
             return "pending"
         if data.get("pending") is True:
             return "pending"
+        if data.get("pending") is False and data.get("success") is True:
+            return "completed"
         if data.get("running") is True or data.get("executing") is True:
             return "running"
         progress = data.get("progress")
@@ -633,11 +635,17 @@ class RoleSwapClient:
         兼容：
         - 顶层 url / video_url 字段
         - ComfyUI history：outputs -> 节点62(VHS_VideoCombine) -> gifs
-        - 简化 API 包装的 output / results 字段
+        - 简化 API 包装的 results[] / output / results 字段
         """
+        results = data.get("results")
+        if isinstance(results, list):
+            url = self._pick_video_from_results(results)
+            if url:
+                return url
+
         for key in ("video_url", "output_url", "url", "result_url"):
             val = data.get(key)
-            if isinstance(val, str) and val:
+            if isinstance(val, str) and val and self._looks_like_video_ref(val):
                 return self._normalize_output_ref(val)
 
         outputs = data.get("outputs")
@@ -648,18 +656,118 @@ class RoleSwapClient:
                 if url:
                     return url
         elif isinstance(outputs, list):
-            for item in outputs:
-                url = self._dig_url(item)
-                if url:
-                    return self._normalize_output_ref(url)
+            url = self._pick_video_from_results(outputs)
+            if url:
+                return url
 
-        for key in ("output", "result", "results"):
+        for key in ("output", "result"):
             val = data.get(key)
             url = self._dig_url(val)
             if url:
                 return self._normalize_output_ref(url)
 
         return None
+
+    def _pick_video_from_results(self, results: List[Any]) -> Optional[str]:
+        """从 API ``results`` 数组中挑选最终视频输出（忽略 temp 预览图）。"""
+        ranked: list[tuple[int, str]] = []
+        for item in results:
+            parsed = self._parse_result_item(item)
+            if not parsed:
+                continue
+            url, score = parsed
+            ranked.append((score, url))
+        if not ranked:
+            return None
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        return ranked[0][1]
+
+    def _parse_result_item(self, item: Any) -> Optional[tuple[str, int]]:
+        """解析单条 result，返回 (url, priority)。非视频或 temp 文件返回 None。"""
+        if isinstance(item, str):
+            if self._looks_like_video_ref(item) and "temp" not in item.lower():
+                return self._normalize_output_ref(item), 10
+            return None
+        if not isinstance(item, dict):
+            return None
+
+        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+        media_type = str(item.get("type") or raw.get("type") or "").lower()
+        ftype = str(raw.get("type") or item.get("ftype") or "").lower()
+        filename = str(
+            raw.get("filename") or item.get("filename") or item.get("name") or ""
+        )
+        url = str(item.get("url") or item.get("video_url") or item.get("output_url") or "")
+
+        if ftype == "temp" or "ComfyUI_temp_" in filename:
+            return None
+        if media_type == "image" and not self._looks_like_video_ref(filename or url):
+            return None
+
+        score = 0
+        if media_type in {"video", "gif", "gifs"}:
+            score += 20
+        if ftype == "output":
+            score += 15
+        if self._looks_like_video_ref(filename or url):
+            score += 10
+        if score <= 0:
+            return None
+
+        if url:
+            return self._normalize_output_ref(url), score
+        if filename:
+            return (
+                self._build_view_url(
+                    filename=filename,
+                    subfolder=str(raw.get("subfolder") or item.get("subfolder") or ""),
+                    ftype=ftype or "output",
+                ),
+                score,
+            )
+        return None
+
+    @staticmethod
+    def _looks_like_video_ref(ref: str) -> bool:
+        ref_l = ref.lower()
+        return ref_l.endswith((".mp4", ".webm", ".mov", ".mkv", ".gif"))
+
+    def _format_missing_video_error(self, prompt_id: str, data: Dict[str, Any]) -> str:
+        """工作流已结束但未产出视频时的可读错误。"""
+        artifacts = self._summarize_result_artifacts(data.get("results"))
+        lines = [
+            f"任务 {prompt_id} 已结束，但未生成视频输出。",
+            "这通常表示 ComfyUI 工作流在中间节点失败，或视频合成节点（62）未执行。",
+        ]
+        if artifacts:
+            lines.append(f"API 返回的附件：{artifacts}")
+            if any("temp" in a.lower() or ".png" in a.lower() for a in artifacts):
+                lines.append(
+                    "当前仅有临时预览图（ComfyUI_temp_*.png），说明推理未走到最终视频导出。"
+                    "请在 ComfyUI 画布查看该 prompt 的执行日志与报错节点。"
+                )
+        else:
+            lines.append(f"原始响应：{data!r}")
+        lines.append(
+            "建议：在 ComfyUI 手动跑同一段输入，确认节点 62（VHS_VideoCombine）能正常输出 mp4。"
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _summarize_result_artifacts(results: Any) -> List[str]:
+        if not isinstance(results, list):
+            return []
+        out: List[str] = []
+        for item in results:
+            if isinstance(item, dict):
+                raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+                name = raw.get("filename") or item.get("filename") or item.get("type")
+                ftype = raw.get("type") or item.get("type")
+                if name:
+                    out.append(f"{name} (type={ftype})")
+            elif item:
+                out.append(str(item))
+        return out
 
     def _extract_from_node_output(self, node_out: Any) -> Optional[str]:
         if not isinstance(node_out, dict):
@@ -675,18 +783,30 @@ class RoleSwapClient:
 
     def _media_item_to_url(self, item: Any) -> Optional[str]:
         if isinstance(item, str):
+            if not self._looks_like_video_ref(item):
+                return None
             return self._normalize_output_ref(item)
         if isinstance(item, dict):
+            raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+            ftype = str(raw.get("type") or item.get("type") or "output").lower()
+            filename = str(
+                item.get("filename") or item.get("name") or raw.get("filename") or ""
+            )
+            if ftype == "temp" or "ComfyUI_temp_" in filename:
+                return None
+            if str(item.get("type") or "").lower() == "image" and not self._looks_like_video_ref(
+                filename
+            ):
+                return None
             for key in ("url", "video_url", "output_url", "fullpath"):
                 val = item.get(key)
-                if isinstance(val, str) and val:
+                if isinstance(val, str) and val and self._looks_like_video_ref(val):
                     return self._normalize_output_ref(val)
-            filename = item.get("filename") or item.get("name")
-            if isinstance(filename, str) and filename:
+            if filename and self._looks_like_video_ref(filename):
                 return self._build_view_url(
                     filename=filename,
-                    subfolder=str(item.get("subfolder") or ""),
-                    ftype=str(item.get("type") or "output"),
+                    subfolder=str(item.get("subfolder") or raw.get("subfolder") or ""),
+                    ftype=ftype or "output",
                 )
         return None
 
@@ -778,13 +898,17 @@ class RoleSwapClient:
     def _normalize_output_ref(self, ref: str) -> str:
         if self._is_url(ref):
             return self._fix_view_url(ref)
-        if ref.lower().endswith((".mp4", ".webm", ".mov", ".mkv", ".gif")):
-            filename, subfolder, ftype = self._split_comfy_output_path(ref)
+        if self._looks_like_video_ref(ref):
+            filename, subfolder, ftype = self._split_comfy_output_path(
+                ref.lstrip("/")
+            )
             return self._build_view_url(
                 filename=filename,
                 subfolder=subfolder,
                 ftype=ftype,
             )
+        if ref.startswith("/"):
+            return self._fix_view_url(self.config.url(ref))
         return ref
 
     @staticmethod

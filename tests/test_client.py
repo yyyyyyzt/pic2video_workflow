@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from roleswap.client import RoleSwapClient
+from roleswap.client import RoleSwapClient, RoleSwapError
 from roleswap.config import RoleSwapConfig
 
 
@@ -109,6 +109,73 @@ def test_parse_queue_for_prompt():
     }
     assert RoleSwapClient._parse_queue_for_prompt(data, "p2") is not None
     print("parse_queue OK")
+
+
+def test_infer_poll_status_pending_false_with_results():
+    client = RoleSwapClient(config=_config())
+    data = {
+        "success": True,
+        "pending": False,
+        "results": [
+            {
+                "type": "image",
+                "url": "/api/comfy/view?filename=ComfyUI_temp_x.png&type=temp",
+                "raw": {"filename": "ComfyUI_temp_x.png", "type": "temp"},
+            }
+        ],
+    }
+    assert client._infer_poll_status(data) == "completed"
+    assert client._extract_output_url(data) is None
+    err = client._format_missing_video_error("pid-1", data)
+    assert "未生成视频" in err
+    assert "ComfyUI_temp" in err
+    print("pending_false temp result OK")
+
+
+def test_pick_video_from_results():
+    client = RoleSwapClient(config=_config())
+    results = [
+        {
+            "type": "image",
+            "url": "/api/comfy/view?filename=ComfyUI_temp_a.png&type=temp",
+            "raw": {"filename": "ComfyUI_temp_a.png", "type": "temp"},
+        },
+        {
+            "type": "video",
+            "url": "/api/comfy/view?filename=AnimateDiff_00003.mp4&type=output&subfolder=Scail2",
+            "raw": {"filename": "AnimateDiff_00003.mp4", "subfolder": "Scail2", "type": "output"},
+        },
+    ]
+    url = client._pick_video_from_results(results)
+    assert url and "AnimateDiff_00003.mp4" in url
+    print("pick_video_from_results OK")
+
+
+def test_wait_for_result_fails_fast_on_temp_only():
+    temp_only = {
+        "success": True,
+        "pending": False,
+        "prompt_id": "p-temp",
+        "results": [
+            {
+                "type": "image",
+                "url": "/api/comfy/view?filename=ComfyUI_temp_b.png&type=temp",
+                "raw": {"filename": "ComfyUI_temp_b.png", "type": "temp"},
+            }
+        ],
+    }
+    session = FakeSession(
+        post_responses=[],
+        get_responses=[FakeResponse(200, temp_only)],
+    )
+    client = RoleSwapClient(config=_config(), session=session)
+    try:
+        client.wait_for_result("p-temp")
+        raise AssertionError("should raise")
+    except RoleSwapError as exc:
+        assert "未生成视频" in str(exc)
+        assert len(session.get_calls) == 1
+    print("fail fast temp only OK")
 
 
 def test_wait_for_result_polls_until_done():
@@ -215,6 +282,9 @@ def test_download_writes_file(tmp_path=None):
 if __name__ == "__main__":
     test_submit_builds_payload_and_returns_prompt_id()
     test_infer_poll_status_pending()
+    test_infer_poll_status_pending_false_with_results()
+    test_pick_video_from_results()
+    test_wait_for_result_fails_fast_on_temp_only()
     test_format_poll_detail()
     test_parse_queue_for_prompt()
     test_wait_for_result_polls_until_done()
