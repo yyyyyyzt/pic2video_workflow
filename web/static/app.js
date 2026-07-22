@@ -13,6 +13,16 @@ const progressFill = document.getElementById("progress-fill");
 const progressText = document.getElementById("progress-text");
 const jobsListEl = document.getElementById("jobs-list");
 const refreshJobsBtn = document.getElementById("refresh-jobs-btn");
+const sliceModeSelect = document.getElementById("slice-mode");
+const sliceModeHint = document.getElementById("slice-mode-hint");
+const frameLoadCapInput = document.getElementById("frame-load-cap");
+const durationInput = document.querySelector('input[name="duration"]');
+
+const SLICE_HINTS = {
+  normal: "长视频按帧上限自动分段，稳定优先",
+  single: "整段一次提交，与 ComfyUI 画布对齐；请设 duration=12、帧上限≥288、并行=1",
+  halves: "仅切 2 段，用于快速验证分段逻辑是否正常",
+};
 
 const STORAGE_KEY = "roleswap_active_job_id";
 let pollTimer = null;
@@ -56,6 +66,32 @@ resumeBtn.addEventListener("click", async () => {
 });
 
 refreshJobsBtn.addEventListener("click", () => loadJobsList());
+
+function updateSliceModeHint() {
+  if (!sliceModeSelect || !sliceModeHint) return;
+  const mode = sliceModeSelect.value;
+  sliceModeHint.textContent = SLICE_HINTS[mode] || SLICE_HINTS.normal;
+
+  if (frameLoadCapInput && mode === "single") {
+    const duration = Number(durationInput?.value || 12);
+    const suggested = Math.max(288, Math.ceil(duration * 24));
+    if (Number(frameLoadCapInput.value) < suggested) {
+      frameLoadCapInput.value = String(suggested);
+    }
+    frameLoadCapInput.max = frameLoadCapInput.getAttribute("data-debug-cap") || frameLoadCapInput.max;
+  }
+}
+
+if (sliceModeSelect) {
+  sliceModeSelect.addEventListener("change", updateSliceModeHint);
+  if (frameLoadCapInput) {
+    frameLoadCapInput.setAttribute(
+      "data-debug-cap",
+      frameLoadCapInput.getAttribute("max") || "600"
+    );
+  }
+  updateSliceModeHint();
+}
 
 function setActiveJob(jobId) {
   activeJobId = jobId;

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from roleswap.workflow_template import (
     DEBUG_FRAME_LOAD_CAP,
     DEFAULT_NEGATIVE_PROMPT,
+    DEFAULT_POSITIVE_PROMPT,
     FRAME_LOAD_CAP,
     VALID_SLICE_MODES,
     WorkflowOptions,
@@ -25,6 +26,15 @@ def _get_float(form: Mapping[str, Any], key: str, default: float) -> float:
     if raw is None or str(raw).strip() == "":
         return default
     return float(raw)
+
+
+def _get_str(form: Mapping[str, Any], key: str, default: str) -> str:
+    if key not in form:
+        return default
+    raw = form.get(key)
+    if raw is None:
+        return default
+    return str(raw)
 
 
 def _get_bool(form: Mapping[str, Any], key: str, default: bool = False) -> bool:
@@ -55,7 +65,7 @@ def parse_workflow_options(form: Mapping[str, Any]) -> WorkflowOptions:
         frame_load_cap=_get_int(form, "frame_load_cap", 121),
         output_width=_get_int(form, "output_width", 896),
         fps=_get_int(form, "fps", 24),
-        positive_prompt=str(form.get("positive_prompt", "")),
+        positive_prompt=_get_str(form, "positive_prompt", DEFAULT_POSITIVE_PROMPT),
         negative_prompt=str(form.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)),
         pose_strength=_get_float(form, "pose_strength", 1.0),
         ref_strength=_get_float(form, "ref_strength", 0.9),

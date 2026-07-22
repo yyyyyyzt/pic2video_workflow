@@ -11,7 +11,12 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
-from roleswap.workflow_template import FRAME_LOAD_CAP, DEBUG_FRAME_LOAD_CAP
+from roleswap.workflow_template import (
+    DEBUG_FRAME_LOAD_CAP,
+    DEFAULT_NEGATIVE_PROMPT,
+    DEFAULT_POSITIVE_PROMPT,
+    FRAME_LOAD_CAP,
+)
 from web.forms import parse_workflow_options, validate_workflow_options
 from web.job_store import JobStore, is_pid_alive, recover_stale_jobs
 
@@ -62,6 +67,8 @@ def create_app() -> Flask:
             "index.html",
             frame_load_cap=FRAME_LOAD_CAP,
             debug_frame_load_cap=DEBUG_FRAME_LOAD_CAP,
+            default_positive_prompt=DEFAULT_POSITIVE_PROMPT,
+            default_negative_prompt=DEFAULT_NEGATIVE_PROMPT,
         )
 
     @app.get("/health")

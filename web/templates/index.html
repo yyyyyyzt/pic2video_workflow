@@ -8,177 +8,209 @@
 </head>
 <body>
   <div class="container">
-    <header>
-      <h1>RoleSwap 数字人测试台</h1>
-      <p>任务在<strong>服务器后台</strong>执行，关闭页面或断网不影响生成。可随时回来查看进度。</p>
+    <header class="page-header">
+      <div>
+        <h1>RoleSwap 数字人测试台</h1>
+        <p>任务在<strong>服务器后台</strong>执行，关闭页面或断网不影响生成。可随时回来查看进度。</p>
+      </div>
+      <div class="header-tips">
+        <p class="tip-chip">绿幕素材：开启前景精修 + 参考图白底</p>
+        <p class="tip-chip">画布对齐：切片选「不切片」，duration=12，帧上限≥288</p>
+      </div>
     </header>
 
-    <section class="card">
-      <div class="section-header">
-        <h2>任务列表</h2>
-        <button type="button" id="refresh-jobs-btn" class="btn-secondary">刷新</button>
+    <div class="page-layout">
+      <div class="panel panel-form">
+        <form id="job-form" class="card">
+          <h2 class="section-title">新建任务</h2>
+
+          <div class="info-box">
+            <strong>快速开始</strong>
+            <p>上传表演视频与目标人脸图，保持默认参数即可试跑。长视频会自动切片；若 ComfyUI 画布 12s 正常而 API 失败，请用右侧提示的调试组合。</p>
+          </div>
+
+          <div class="grid-2">
+            <label class="field">
+              <span>表演视频 *（节点 46:video）</span>
+              <input type="file" name="video" accept="video/*" required />
+              <small class="field-hint">支持 mp4 / mov / webm 等，绿幕表演素材效果更佳</small>
+            </label>
+            <label class="field">
+              <span>目标人脸图片 *（节点 47:image）</span>
+              <input type="file" name="face" accept="image/*" required />
+              <small class="field-hint">建议白底或纯色背景正面照，与高级参数中的参考图底色一致</small>
+            </label>
+          </div>
+
+          <h3 class="subsection-title">基础参数</h3>
+          <div class="grid-2">
+            <label class="field">
+              <span>工作流模式（节点 151:value）</span>
+              <select name="mode">
+                <option value="role_swap" selected>角色替换（False）</option>
+                <option value="motion_transfer">动作迁移（True）</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>目标时长 duration（秒）</span>
+              <input type="number" name="duration" value="60" min="1" max="600" />
+              <small class="field-hint">调试对齐画布时设为 12；长视频会按帧上限自动切段</small>
+            </label>
+            <label class="field">
+              <span>采样步数 steps（42:steps）</span>
+              <input type="number" name="steps" value="6" min="1" max="30" />
+            </label>
+            <label class="field">
+              <span>引导强度 cfg（42:cfg）</span>
+              <input type="number" name="cfg" value="1.0" min="0.1" max="5" step="0.1" />
+            </label>
+            <label class="field">
+              <span>时序偏移 shift（42:shift）</span>
+              <input type="number" name="shift" value="5.0" min="0" max="20" step="0.1" />
+            </label>
+            <label class="field">
+              <span>随机种子 seed（42:seed，留空随机）</span>
+              <input type="number" name="seed" placeholder="可选" />
+            </label>
+            <label class="field">
+              <span>切片模式（调试）</span>
+              <select name="slice_mode" id="slice-mode">
+                <option value="normal" selected>正常切片（长视频）</option>
+                <option value="single">调试：不切片（整段一次提交）</option>
+                <option value="halves">调试：仅切 2 段</option>
+              </select>
+              <small class="field-hint" id="slice-mode-hint">长视频按帧上限自动分段，稳定优先</small>
+            </label>
+            <label class="field">
+              <span>并行数 max_parallel</span>
+              <input type="number" name="max_parallel" value="1" min="1" max="8" />
+              <small class="field-hint">建议保持 1，多段并行易触发远端不稳定</small>
+            </label>
+          </div>
+
+          <h3 class="subsection-title">提示词</h3>
+          <p class="muted subsection-hint">已预填绿幕场景常用描述，可按素材微调。留空则使用下方默认内容。</p>
+          <label class="field">
+            <span>正向提示词（56:positive_prompt）</span>
+            <textarea name="positive_prompt" rows="2">{{ default_positive_prompt }}</textarea>
+            <small class="field-hint">强调纯色背景、边缘清晰、自然融合，有助于减少白边与光晕</small>
+          </label>
+          <label class="field">
+            <span>负向提示词（56:negative_prompt）</span>
+            <textarea name="negative_prompt" rows="3">{{ default_negative_prompt }}</textarea>
+            <small class="field-hint">已包含白边、光晕、抠图瑕疵等常见负面描述</small>
+          </label>
+
+          <details class="advanced">
+            <summary>高级工作流参数（ComfyUI input_values）</summary>
+            <p class="muted subsection-hint">
+              绿幕抠图、输出分辨率、帧率等进阶选项。首次使用可保持默认，遇到边缘问题时再展开调整。
+            </p>
+            <div class="grid-2">
+              <label class="field">
+                <span>单段帧数上限（125:value）</span>
+                <input type="number" name="frame_load_cap" id="frame-load-cap" value="{{ frame_load_cap }}" min="1" max="{{ debug_frame_load_cap }}" />
+                <small class="field-hint">正常 ≤{{ frame_load_cap }}；不切片调试可调到 ≥288（12s×24fps），上限 {{ debug_frame_load_cap }}</small>
+              </label>
+              <label class="field">
+                <span>输出宽度（123:value）</span>
+                <input type="number" name="output_width" value="896" min="0" max="4096" step="32" />
+              </label>
+              <label class="field">
+                <span>帧率 fps（124:value / 99:frame_rate）</span>
+                <input type="number" name="fps" value="24" min="1" max="60" />
+              </label>
+              <label class="field">
+                <span>姿态强度（159:pose_strength）</span>
+                <input type="number" name="pose_strength" value="1.0" min="0" max="2" step="0.05" />
+              </label>
+              <label class="field">
+                <span>参考强度（159:ref_strength）</span>
+                <input type="number" name="ref_strength" value="0.9" min="0" max="2" step="0.05" />
+                <small class="field-hint">绿幕场景建议 0.85~0.95</small>
+              </label>
+              <label class="field">
+                <span>上下文重叠（43:context_overlap）</span>
+                <input type="number" name="context_overlap" value="16" min="0" max="32" />
+              </label>
+            </div>
+
+            <h4 class="subsection-subtitle">抠图 / 背景（绿幕视频 & 白底参考图）</h4>
+            <p class="muted subsection-hint">
+              绿幕素材建议勾选「前景边缘精修」；白底人脸参考图请将参考图补底色设为 #FFFFFF。
+            </p>
+            <div class="grid-2">
+              <label class="field checkbox-field">
+                <input type="checkbox" name="refine_foreground" value="1" />
+                <span>前景边缘精修（104:refine_foreground）</span>
+              </label>
+              <label class="field checkbox-field">
+                <input type="checkbox" name="preserve_main_ref_background" value="1" />
+                <span>保留参考图背景（159:preserve_main_ref_background）</span>
+              </label>
+              <label class="field checkbox-field">
+                <input type="checkbox" name="prefix_alpha_crop" value="1" />
+                <span>Alpha 前缀裁剪（159:prefix_alpha_crop）</span>
+              </label>
+              <label class="field">
+                <span>抠图后铺底（104:add_background）</span>
+                <select name="rem_add_background">
+                  <option value="green" selected>green（绿幕推荐）</option>
+                  <option value="black">black</option>
+                  <option value="white">white</option>
+                  <option value="none">none</option>
+                  <option value="transparent">transparent</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>人体检测阈值（91/97:detection_threshold）</span>
+                <input type="number" name="detection_threshold" value="0.5" min="0" max="1" step="0.05" />
+              </label>
+              <label class="field">
+                <span>参考图补底色（48/49:background_color）</span>
+                <input type="text" name="ref_background_color" value="#FFFFFF" placeholder="#FFFFFF" />
+              </label>
+            </div>
+          </details>
+
+          <div class="form-actions">
+            <button type="submit" id="submit-btn">提交后台任务</button>
+            <p class="muted form-footnote">提交后可在右侧查看进度，无需保持本页打开</p>
+          </div>
+        </form>
       </div>
-      <div id="jobs-list" class="jobs-list">
-        <p class="muted">加载中…</p>
+
+      <div class="panel panel-side">
+        <section class="card card-jobs">
+          <div class="section-header">
+            <h2>任务列表</h2>
+            <button type="button" id="refresh-jobs-btn" class="btn-secondary">刷新</button>
+          </div>
+          <div id="jobs-list" class="jobs-list">
+            <p class="muted">加载中…</p>
+          </div>
+        </section>
+
+        <section id="status-card" class="card hidden">
+          <h2>当前任务详情</h2>
+          <p><strong>任务 ID：</strong><span id="job-id">-</span></p>
+          <p><strong>状态：</strong><span id="job-status" class="badge">-</span></p>
+          <p id="job-message">-</p>
+          <p id="job-remote-status" class="muted hidden"></p>
+          <div class="progress-wrap hidden" id="progress-wrap">
+            <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+            <p class="muted" id="progress-text">0 / 0 段</p>
+          </div>
+          <pre id="job-log" class="log hidden"></pre>
+          <pre id="job-seg-errors" class="error hidden"></pre>
+          <pre id="job-error" class="error hidden"></pre>
+          <div class="actions">
+            <a id="download-link" class="btn hidden" href="#" download>下载结果视频</a>
+            <button type="button" id="resume-btn" class="btn-secondary hidden">继续任务（断点续传）</button>
+          </div>
+        </section>
       </div>
-    </section>
-
-    <form id="job-form" class="card">
-      <h2 class="section-title">新建任务</h2>
-      <div class="grid-2">
-        <label class="field">
-          <span>表演视频 *（节点 46:video）</span>
-          <input type="file" name="video" accept="video/*" required />
-        </label>
-        <label class="field">
-          <span>目标人脸图片 *（节点 47:image）</span>
-          <input type="file" name="face" accept="image/*" required />
-        </label>
-      </div>
-
-      <div class="grid-3">
-        <label class="field">
-          <span>工作流模式（节点 151:value）</span>
-          <select name="mode">
-            <option value="role_swap" selected>角色替换（False）</option>
-            <option value="motion_transfer">动作迁移（True）</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>目标时长 duration（秒）</span>
-          <input type="number" name="duration" value="60" min="1" max="600" />
-        </label>
-        <label class="field">
-          <span>采样步数 steps（42:steps）</span>
-          <input type="number" name="steps" value="6" min="1" max="30" />
-        </label>
-        <label class="field">
-          <span>引导强度 cfg（42:cfg）</span>
-          <input type="number" name="cfg" value="1.0" min="0.1" max="5" step="0.1" />
-        </label>
-        <label class="field">
-          <span>时序偏移 shift（42:shift）</span>
-          <input type="number" name="shift" value="5.0" min="0" max="20" step="0.1" />
-        </label>
-        <label class="field">
-          <span>随机种子 seed（42:seed，留空随机）</span>
-          <input type="number" name="seed" placeholder="可选" />
-        </label>
-        <label class="field">
-          <span>切片模式（调试）</span>
-          <select name="slice_mode">
-            <option value="normal" selected>正常切片（长视频）</option>
-            <option value="single">调试：不切片（整段一次提交）</option>
-            <option value="halves">调试：仅切 2 段</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>并行数 max_parallel（建议 1，稳定优先）</span>
-          <input type="number" name="max_parallel" value="1" min="1" max="8" />
-        </label>
-      </div>
-
-      <details class="advanced" open>
-        <summary>高级工作流参数（ComfyUI input_values）</summary>
-        <p class="muted subsection-hint">
-          「不切片」调试：选切片模式为「整段一次提交」，duration 设 12，并把下方
-          <strong>单段帧数上限</strong> 调到 ≥288（12s×24fps），与 ComfyUI 画布一致。
-        </p>
-        <div class="grid-3">
-          <label class="field">
-            <span>单段帧数上限（125:value，正常≤{{ frame_load_cap }}，不切片调试≤{{ debug_frame_load_cap }}）</span>
-            <input type="number" name="frame_load_cap" value="{{ frame_load_cap }}" min="1" max="{{ debug_frame_load_cap }}" />
-          </label>
-          <label class="field">
-            <span>输出宽度（123:value）</span>
-            <input type="number" name="output_width" value="896" min="0" max="4096" step="32" />
-          </label>
-          <label class="field">
-            <span>帧率 fps（124:value / 99:frame_rate）</span>
-            <input type="number" name="fps" value="24" min="1" max="60" />
-          </label>
-          <label class="field">
-            <span>姿态强度（159:pose_strength）</span>
-            <input type="number" name="pose_strength" value="1.0" min="0" max="2" step="0.05" />
-          </label>
-          <label class="field">
-            <span>参考强度（159:ref_strength，绿幕可试 0.85~0.95）</span>
-            <input type="number" name="ref_strength" value="0.9" min="0" max="2" step="0.05" />
-          </label>
-          <label class="field">
-            <span>上下文重叠（43:context_overlap）</span>
-            <input type="number" name="context_overlap" value="16" min="0" max="32" />
-          </label>
-        </div>
-
-        <h3 class="subsection-title">抠图 / 背景（绿幕视频 & 白底参考图）</h3>
-        <p class="muted subsection-hint">
-          绿幕素材建议开启「前景边缘精修」；白底人脸参考图请将参考图补底色设为 #FFFFFF。
-        </p>
-        <div class="grid-3">
-          <label class="field checkbox-field">
-            <span>前景边缘精修（104:refine_foreground）</span>
-            <input type="checkbox" name="refine_foreground" value="1" />
-          </label>
-          <label class="field checkbox-field">
-            <span>保留参考图背景（159:preserve_main_ref_background）</span>
-            <input type="checkbox" name="preserve_main_ref_background" value="1" />
-          </label>
-          <label class="field checkbox-field">
-            <span>Alpha 前缀裁剪（159:prefix_alpha_crop）</span>
-            <input type="checkbox" name="prefix_alpha_crop" value="1" />
-          </label>
-          <label class="field">
-            <span>抠图后铺底（104:add_background）</span>
-            <select name="rem_add_background">
-              <option value="green" selected>green（绿幕推荐）</option>
-              <option value="black">black</option>
-              <option value="white">white</option>
-              <option value="none">none</option>
-              <option value="transparent">transparent</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>人体检测阈值（91/97:detection_threshold）</span>
-            <input type="number" name="detection_threshold" value="0.5" min="0" max="1" step="0.05" />
-          </label>
-          <label class="field">
-            <span>参考图补底色（48/49:background_color）</span>
-            <input type="text" name="ref_background_color" value="#FFFFFF" placeholder="#FFFFFF" />
-          </label>
-        </div>
-
-        <label class="field">
-          <span>正向提示词（56:positive_prompt）</span>
-          <textarea name="positive_prompt" rows="2" placeholder="可选"></textarea>
-        </label>
-        <label class="field">
-          <span>负向提示词（56:negative_prompt）</span>
-          <textarea name="negative_prompt" rows="3">色调艳丽，过曝，静态，细节模糊不清，字幕，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走</textarea>
-        </label>
-      </details>
-
-      <button type="submit" id="submit-btn">提交后台任务</button>
-    </form>
-
-    <section id="status-card" class="card hidden">
-      <h2>当前任务详情</h2>
-      <p><strong>任务 ID：</strong><span id="job-id">-</span></p>
-      <p><strong>状态：</strong><span id="job-status" class="badge">-</span></p>
-      <p id="job-message">-</p>
-      <p id="job-remote-status" class="muted hidden"></p>
-      <div class="progress-wrap hidden" id="progress-wrap">
-        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-        <p class="muted" id="progress-text">0 / 0 段</p>
-      </div>
-      <pre id="job-log" class="log hidden"></pre>
-      <pre id="job-seg-errors" class="error hidden"></pre>
-      <pre id="job-error" class="error hidden"></pre>
-      <div class="actions">
-        <a id="download-link" class="btn hidden" href="#" download>下载结果视频</a>
-        <button type="button" id="resume-btn" class="btn-secondary hidden">继续任务（断点续传）</button>
-      </div>
-    </section>
+    </div>
   </div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

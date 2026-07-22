@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from roleswap.workflow_template import DEFAULT_POSITIVE_PROMPT
 from web.forms import parse_workflow_options, validate_workflow_options
 
 
@@ -13,6 +14,7 @@ def test_parse_workflow_options_defaults():
     assert opts.mode == "role_swap"
     assert opts.steps == 6
     assert opts.frame_load_cap == 121
+    assert opts.positive_prompt == DEFAULT_POSITIVE_PROMPT
     assert validate_workflow_options(opts) is None
     assert validate_workflow_options(opts, slice_mode="single") is None
     opts2 = parse_workflow_options({"frame_load_cap": "288"})
