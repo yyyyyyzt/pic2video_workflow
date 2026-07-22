@@ -162,16 +162,27 @@ def is_pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
-def recover_stale_jobs(store: JobStore) -> int:
-    """将 worker 已退出但仍标记 running 的任务改为 interrupted。"""
+def recover_stale_jobs(
+    store: JobStore,
+    *,
+    grace_seconds: float = 180.0,
+) -> int:
+    """将 worker 已退出且长时间无心跳的 running 任务改为 interrupted。"""
     recovered = 0
+    now = time.time()
     for job in store.list_jobs(limit=200):
-        if job.status == "running" and not is_pid_alive(job.worker_pid):
-            store.update(
-                job.id,
-                status="interrupted",
-                message="后台进程已中断，可点击「继续任务」断点续传",
-                worker_pid=None,
-            )
-            recovered += 1
+        if job.status != "running":
+            continue
+        if is_pid_alive(job.worker_pid):
+            continue
+        # 刚更新过状态的任务可能正在启动 worker 或长轮询中，暂不判定中断
+        if now - job.updated_at < grace_seconds:
+            continue
+        store.update(
+            job.id,
+            status="interrupted",
+            message="后台进程已中断，可点击「继续任务」断点续传",
+            worker_pid=None,
+        )
+        recovered += 1
     return recovered

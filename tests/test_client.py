@@ -115,16 +115,44 @@ def test_extract_output_url_variants():
     print("extract_output_url OK")
 
 
+def test_fix_view_url_strips_output_prefix():
+    client = RoleSwapClient(config=_config())
+    bad = (
+        "https://host.test/api/comfy/view?"
+        "filename=%2Foutput%2FScail2%2FAnimateDiff_00003.mp4&type=output"
+    )
+    fixed = client._fix_view_url(bad)
+    assert "filename=AnimateDiff_00003.mp4" in fixed
+    assert "subfolder=Scail2" in fixed
+    assert "%2Foutput%2F" not in fixed
+    print("fix_view_url OK")
+
+
+def test_normalize_output_ref_with_path():
+    client = RoleSwapClient(config=_config())
+    url = client._normalize_output_ref("/output/Scail2/AnimateDiff_00003.mp4")
+    assert "filename=AnimateDiff_00003.mp4" in url
+    assert "subfolder=Scail2" in url
+    print("normalize_output_ref path OK")
+
+
 def test_download_writes_file(tmp_path=None):
     import tempfile
     session = FakeSession(
         post_responses=[],
-        get_responses=[FakeResponse(200, {}, content=b"BINARYDATA")],
+        get_responses=[
+            FakeResponse(502, {"error": "File not found"}),
+            FakeResponse(200, {}, content=b"BINARYDATA"),
+        ],
     )
     client = RoleSwapClient(config=_config(), session=session)
     with tempfile.TemporaryDirectory() as d:
         dest = os.path.join(d, "out.mp4")
-        client.download("https://x/out.mp4", dest)
+        bad = (
+            "https://host.test/api/comfy/view?"
+            "filename=%2Foutput%2FScail2%2Fout.mp4&type=output"
+        )
+        client.download(bad, dest)
         with open(dest, "rb") as fh:
             assert fh.read() == b"BINARYDATA"
     print("download OK")
@@ -134,5 +162,7 @@ if __name__ == "__main__":
     test_submit_builds_payload_and_returns_prompt_id()
     test_wait_for_result_polls_until_done()
     test_extract_output_url_variants()
+    test_fix_view_url_strips_output_prefix()
+    test_normalize_output_ref_with_path()
     test_download_writes_file()
     print("\nALL CLIENT TESTS PASSED")

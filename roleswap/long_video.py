@@ -278,6 +278,33 @@ class LongVideoProcessor:
     # ------------------------------------------------------------------ #
     # 片段处理（含重试）
     # ------------------------------------------------------------------ #
+    def _download_with_retries(
+        self,
+        output_url: str,
+        dest_path: str,
+        *,
+        max_attempts: int = 3,
+    ) -> None:
+        """下载输出文件；client 内部会尝试多种 view URL 变体。"""
+        last_err: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.client.download(output_url, dest_path)
+                return
+            except RoleSwapError as exc:
+                last_err = exc
+                if attempt < max_attempts:
+                    logger.warning(
+                        "下载第 %d/%d 次失败，%ds 后重试：%s",
+                        attempt,
+                        max_attempts,
+                        min(2**attempt, 10),
+                        exc,
+                    )
+                    time.sleep(min(2**attempt, 10))
+        if last_err:
+            raise last_err
+
     def _process_one(
         self,
         st: SegmentState,
@@ -325,7 +352,7 @@ class LongVideoProcessor:
                 )
                 st.prompt_id = prompt_id
                 output_url = self.client.wait_for_result(prompt_id)
-                self.client.download(output_url, seg_output)
+                self._download_with_retries(output_url, seg_output)
 
                 st.output_path = seg_output
                 st.status = "done"
@@ -333,6 +360,31 @@ class LongVideoProcessor:
                 logger.info("段 %d 完成（第 %d 次尝试）prompt_id=%s", st.index, attempt, prompt_id)
                 print(f"[RoleSwap] 段 {st.index} 完成（第 {attempt} 次尝试）")
                 return st
+            except RoleSwapError as exc:
+                last_err = exc
+                st.error = f"{exc}\n{traceback.format_exc()}"
+                # 推理已完成但下载失败时，不重复提交 GPU 任务
+                if st.prompt_id and "下载失败" in str(exc):
+                    logger.error(
+                        "段 %d 推理已完成但下载失败 prompt_id=%s: %s",
+                        st.index,
+                        st.prompt_id,
+                        exc,
+                    )
+                    break
+                logger.error(
+                    "段 %d 第 %d/%d 次失败: %s",
+                    st.index,
+                    attempt,
+                    params.max_retries,
+                    exc,
+                )
+                print(
+                    f"[RoleSwap] 段 {st.index} 第 {attempt}/{params.max_retries} "
+                    f"次失败：{exc}"
+                )
+                if attempt < params.max_retries:
+                    time.sleep(min(2**attempt, 30))
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 st.error = f"{exc}\n{traceback.format_exc()}"
@@ -347,7 +399,6 @@ class LongVideoProcessor:
                     f"[RoleSwap] 段 {st.index} 第 {attempt}/{params.max_retries} "
                     f"次失败：{exc}"
                 )
-                # 指数退避
                 if attempt < params.max_retries:
                     time.sleep(min(2**attempt, 30))
 

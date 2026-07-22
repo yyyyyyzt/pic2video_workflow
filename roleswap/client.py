@@ -11,7 +11,7 @@ import random
 import re
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
@@ -375,9 +375,32 @@ class RoleSwapClient:
     def download(self, output_url: str, dest_path: str) -> str:
         """下载输出视频到本地路径，返回该路径。"""
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
-        # 支持相对 URL（后端可能只返回路径）
-        full_url = output_url if self._is_url(output_url) else self.config.url(output_url)
-        logger.info("下载输出 -> %s", full_url[:200])
+        candidates = self._candidate_download_urls(output_url)
+        last_err: Optional[RoleSwapError] = None
+        for idx, full_url in enumerate(candidates, start=1):
+            logger.info(
+                "下载输出 #%d/%d -> %s",
+                idx,
+                len(candidates),
+                full_url[:200],
+            )
+            try:
+                return self._download_once(full_url, dest_path)
+            except RoleSwapError as exc:
+                last_err = exc
+                retryable = any(
+                    token in str(exc)
+                    for token in ("404", "502", "File not found", "not found")
+                )
+                if retryable and idx < len(candidates):
+                    logger.warning("下载失败，尝试备用 URL：%s", exc)
+                    continue
+                raise
+        if last_err:
+            raise last_err
+        raise RoleSwapError(f"无法下载输出：{output_url!r}")
+
+    def _download_once(self, full_url: str, dest_path: str) -> str:
         try:
             with self.session.get(
                 full_url,
@@ -395,8 +418,35 @@ class RoleSwapClient:
                             fh.write(chunk)
         except requests.RequestException as exc:
             raise RoleSwapError(f"下载网络异常：{exc}") from exc
-        logger.info("下载完成 %s (%.2f MB)", dest_path, os.path.getsize(dest_path) / 1048576)
+        logger.info(
+            "下载完成 %s (%.2f MB)",
+            dest_path,
+            os.path.getsize(dest_path) / 1048576,
+        )
         return dest_path
+
+    def _candidate_download_urls(self, output_url: str) -> list[str]:
+        """生成一组候选下载 URL（主 URL + 路径修正变体）。"""
+        primary = (
+            output_url
+            if self._is_url(output_url)
+            else self.config.url(output_url)
+        )
+        primary = self._fix_view_url(primary)
+        seen: set[str] = set()
+        candidates: list[str] = []
+        for url in (primary, output_url if self._is_url(output_url) else ""):
+            if not url:
+                continue
+            fixed = self._fix_view_url(url)
+            if fixed not in seen:
+                seen.add(fixed)
+                candidates.append(fixed)
+        for alt in self._alternate_view_urls(primary):
+            if alt not in seen:
+                seen.add(alt)
+                candidates.append(alt)
+        return candidates or [primary]
 
     # ------------------------------------------------------------------ #
     # 响应解析辅助
@@ -477,16 +527,100 @@ class RoleSwapClient:
         return None
 
     def _build_view_url(self, *, filename: str, subfolder: str, ftype: str) -> str:
+        filename, subfolder, ftype = self._split_comfy_output_path(
+            filename, subfolder=subfolder, ftype=ftype
+        )
         params = {"filename": filename, "type": ftype}
         if subfolder:
             params["subfolder"] = subfolder
         return f"{self.config.url(self.config.view_path)}?{urlencode(params)}"
 
+    @staticmethod
+    def _split_comfy_output_path(
+        ref: str,
+        *,
+        subfolder: str = "",
+        ftype: str = "output",
+    ) -> tuple[str, str, str]:
+        """把 ``/output/Scail2/foo.mp4`` 拆成 ComfyUI view 参数。"""
+        path = ref.replace("\\", "/").strip()
+        if path.startswith("/"):
+            path = path.lstrip("/")
+        if path.lower().startswith("output/"):
+            path = path[7:]
+        if subfolder:
+            subfolder = subfolder.replace("\\", "/").strip("/")
+            if subfolder.lower().startswith("output/"):
+                subfolder = subfolder[7:]
+        if "/" in path:
+            parts = [p for p in path.split("/") if p]
+            if len(parts) >= 2:
+                return parts[-1], "/".join(parts[:-1]), ftype
+        return path, subfolder, ftype
+
+    def _fix_view_url(self, url: str) -> str:
+        """修正 view URL 中 filename 误带 ``/output/`` 前缀的情况。"""
+        if not self._is_url(url):
+            return url
+        parsed = urlparse(url)
+        if self.config.view_path.lstrip("/") not in parsed.path:
+            return url
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        filename = (qs.get("filename") or [""])[0]
+        if not filename:
+            return url
+        subfolder = (qs.get("subfolder") or [""])[0]
+        ftype = (qs.get("type") or ["output"])[0]
+        fixed_filename, fixed_subfolder, fixed_type = self._split_comfy_output_path(
+            filename,
+            subfolder=subfolder,
+            ftype=ftype,
+        )
+        return self._build_view_url(
+            filename=fixed_filename,
+            subfolder=fixed_subfolder,
+            ftype=fixed_type,
+        )
+
+    def _alternate_view_urls(self, url: str) -> list[str]:
+        """为同一输出文件生成若干备用 view URL。"""
+        if not self._is_url(url):
+            return []
+        parsed = urlparse(url)
+        if self.config.view_path.lstrip("/") not in parsed.path:
+            return []
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        filename = (qs.get("filename") or [""])[0]
+        if not filename:
+            return []
+        subfolder = (qs.get("subfolder") or [""])[0]
+        ftype = (qs.get("type") or ["output"])[0]
+        base_name, derived_subfolder, _ = self._split_comfy_output_path(filename)
+        variants: list[tuple[str, str, str]] = []
+        if derived_subfolder:
+            variants.append((base_name, derived_subfolder, ftype))
+        if subfolder and subfolder != derived_subfolder:
+            variants.append((base_name, subfolder, ftype))
+        variants.append((base_name, "", ftype))
+        if derived_subfolder:
+            variants.append((f"{derived_subfolder}/{base_name}", "", ftype))
+        alternates: list[str] = []
+        for fn, sub, ft in variants:
+            alt = self._build_view_url(filename=fn, subfolder=sub, ftype=ft)
+            if alt != url:
+                alternates.append(alt)
+        return alternates
+
     def _normalize_output_ref(self, ref: str) -> str:
         if self._is_url(ref):
-            return ref
+            return self._fix_view_url(ref)
         if ref.lower().endswith((".mp4", ".webm", ".mov", ".mkv", ".gif")):
-            return self._build_view_url(filename=ref, subfolder="", ftype="output")
+            filename, subfolder, ftype = self._split_comfy_output_path(ref)
+            return self._build_view_url(
+                filename=filename,
+                subfolder=subfolder,
+                ftype=ftype,
+            )
         return ref
 
     @staticmethod

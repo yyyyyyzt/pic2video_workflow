@@ -34,7 +34,7 @@ def run_job(job_id: str) -> int:
         job_id,
         status="running",
         message="后台任务已启动，正在处理…",
-        worker_pid=None,
+        worker_pid=os.getpid(),
         error=None,
     )
     store.append_log(job_id, f"[worker] 开始执行任务 {job_id}")

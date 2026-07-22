@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,6 +39,13 @@ def test_recover_stale():
             video_name="v.mp4", face_name="f.jpg", duration=30, manifest={}
         )
         store.update(job.id, status="running", worker_pid=999999999)
+        # 刚更新的任务在宽限期内不应被标为 interrupted
+        assert recover_stale_jobs(store) == 0
+        assert store.get(job.id).status == "running"
+        # 模拟长时间无心跳
+        stale = store.get(job.id)
+        stale.updated_at = time.time() - 600
+        store._save(stale)
         n = recover_stale_jobs(store)
         assert n == 1
         assert store.get(job.id).status == "interrupted"
