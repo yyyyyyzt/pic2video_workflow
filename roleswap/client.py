@@ -16,6 +16,12 @@ import requests
 
 from . import workflow_template as wf
 from .config import RoleSwapConfig
+from .upload_utils import (
+    IMAGE_UPLOAD_CANDIDATES,
+    VIDEO_UPLOAD_CANDIDATES,
+    encode_as_data_uri,
+    try_upload,
+)
 
 # 用于判断一个字符串输入是「公网 URL」「base64 data」还是「本地文件路径」。
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -44,14 +50,20 @@ class RoleSwapClient:
     ) -> None:
         self.config = config or RoleSwapConfig.from_env()
         self.session = session or requests.Session()
+        self._input_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------ #
     # 内部工具
     # ------------------------------------------------------------------ #
-    def _headers(self) -> Dict[str, str]:
-        headers = {"Accept": "application/json"}
+    def _auth_headers(self) -> Dict[str, str]:
+        headers: Dict[str, str] = {}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
+        return headers
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {"Accept": "application/json"}
+        headers.update(self._auth_headers())
         return headers
 
     @staticmethod
@@ -66,46 +78,88 @@ class RoleSwapClient:
         """把用户输入解析成后端可接受的引用。
 
         - 公网 URL / base64 data URI：原样透传。
-        - 本地文件：先上传到服务器，返回服务器端文件名。
+        - 本地文件：按 ``input_mode`` 编码为 base64 或上传到服务器。
         """
         if self._is_url(value) or self._is_data_uri(value):
             return value
-        if os.path.exists(value):
-            return self.upload_file(value)
-        raise RoleSwapError(
-            f"无法识别的 {kind} 输入：{value!r}。应为公网 URL、base64 data URI，"
-            "或存在的本地文件路径。"
-        )
+        if not os.path.exists(value):
+            raise RoleSwapError(
+                f"无法识别的 {kind} 输入：{value!r}。应为公网 URL、base64 data URI，"
+                "或存在的本地文件路径。"
+            )
+
+        cache_key = f"{kind}:{os.path.abspath(value)}"
+        if cache_key in self._input_cache:
+            return self._input_cache[cache_key]
+
+        resolved = self._materialize_local_file(value, kind=kind)
+        self._input_cache[cache_key] = resolved
+        return resolved
+
+    def _materialize_local_file(self, local_path: str, *, kind: str) -> str:
+        mode = self.config.input_mode
+        if mode == "base64":
+            return self._encode_local_file(local_path, kind=kind)
+        if mode == "upload":
+            return self.upload_file(local_path, kind=kind)
+
+        # auto：先尝试上传，失败则回退 base64
+        try:
+            return self.upload_file(local_path, kind=kind)
+        except RoleSwapError as exc:
+            if "405" in str(exc) or "Method Not Allowed" in str(exc):
+                return self._encode_local_file(local_path, kind=kind)
+            raise
+
+    def _encode_local_file(self, local_path: str, *, kind: str) -> str:
+        size = os.path.getsize(local_path)
+        if size > self.config.max_base64_bytes:
+            raise RoleSwapError(
+                f"文件 {local_path} 大小 {size} 字节，超过 base64 上限 "
+                f"{self.config.max_base64_bytes}。请改用公网 URL，或配置可用的上传端点 "
+                "(ROLESWAP_INPUT_MODE=upload)。"
+            )
+        return encode_as_data_uri(local_path, kind=kind)
 
     # ------------------------------------------------------------------ #
     # 文件上传
     # ------------------------------------------------------------------ #
-    def upload_file(self, local_path: str) -> str:
-        """上传本地文件到服务器（/api/comfy/upload/file），返回服务器端文件名。"""
+    def upload_file(self, local_path: str, *, kind: str = "image") -> str:
+        """上传本地文件到 ComfyUI 代理，返回服务器端文件引用。
+
+        会依次尝试多个常见上传端点。若全部失败，请使用 ``input_mode=base64``。
+        """
         if not os.path.exists(local_path):
             raise RoleSwapError(f"本地文件不存在：{local_path}")
 
-        url = self.config.url(self.config.upload_path)
-        with open(local_path, "rb") as fh:
-            files = {"image": (os.path.basename(local_path), fh)}
-            resp = self.session.post(
-                url,
-                files=files,
-                headers=self._headers(),
-                timeout=self.config.http_timeout,
-            )
-        if resp.status_code >= 400:
-            raise RoleSwapError(
-                f"上传失败（{resp.status_code}）：{resp.text[:500]}"
-            )
+        candidates = list(
+            IMAGE_UPLOAD_CANDIDATES if kind == "image" else VIDEO_UPLOAD_CANDIDATES
+        )
+        # 用户自定义主端点优先
+        custom = self.config.upload_path
+        if custom:
+            for field in ("image", "file", "video"):
+                pair = (custom, field)
+                if pair not in candidates:
+                    candidates.insert(0, pair)
 
-        data = self._safe_json(resp)
-        # ComfyUI upload 通常返回 {"name": "...", "subfolder": "...", "type": "..."}
-        name = data.get("name") or data.get("filename")
-        if not name:
-            raise RoleSwapError(f"上传响应缺少文件名字段：{data!r}")
-        subfolder = data.get("subfolder")
-        return f"{subfolder}/{name}" if subfolder else name
+        ref, errors = try_upload(
+            self.session,
+            base_url=self.config.base_url,
+            local_path=local_path,
+            kind=kind,
+            headers=self._auth_headers(),
+            timeout=self.config.http_timeout,
+            candidates=candidates,
+        )
+        if ref:
+            return ref
+
+        detail = "\n".join(errors[:6])
+        raise RoleSwapError(
+            f"上传失败：所有端点均不可用。最后错误：\n{detail}\n"
+            "建议设置 ROLESWAP_INPUT_MODE=base64（API 原生支持 data URI）。"
+        )
 
     # ------------------------------------------------------------------ #
     # 提交任务

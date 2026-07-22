@@ -48,6 +48,10 @@ class RoleSwapConfig:
     result_timeout: int = 600
     poll_interval: float = 5.0
     http_timeout: float = 120.0
+    # 本地文件输入方式：base64（推荐，API 原生支持）| upload | auto
+    input_mode: str = "base64"
+    # base64 模式下单文件最大字节数（默认 80MB）
+    max_base64_bytes: int = 80 * 1024 * 1024
 
     # 各端点路径（与文档保持一致，一般无需改动）
     submit_path: str = "/api/workflow/generate"
@@ -72,6 +76,10 @@ class RoleSwapConfig:
             )
 
         api_key = os.getenv("ROLESWAP_API_KEY", "").strip() or None
+        input_mode = os.getenv("ROLESWAP_INPUT_MODE", "base64").strip().lower()
+        if input_mode not in {"base64", "upload", "auto"}:
+            input_mode = "base64"
+        max_base64_bytes = _get_int("ROLESWAP_MAX_BASE64_BYTES", 80 * 1024 * 1024)
 
         return cls(
             base_url=base_url.rstrip("/"),
@@ -80,6 +88,11 @@ class RoleSwapConfig:
             result_timeout=_get_int("ROLESWAP_RESULT_TIMEOUT", 600),
             poll_interval=_get_float("ROLESWAP_POLL_INTERVAL", 5.0),
             http_timeout=_get_float("ROLESWAP_HTTP_TIMEOUT", 120.0),
+            input_mode=input_mode,
+            max_base64_bytes=max_base64_bytes,
+            upload_path=os.getenv(
+                "ROLESWAP_UPLOAD_PATH", "/api/comfy/upload/file"
+            ).strip(),
         )
 
     def url(self, path: str) -> str:

@@ -249,8 +249,9 @@ client.download(url, "clip_swapped.mp4")
 - **音频处理**：API 只输出图像帧；本库单独提取原始音频，在最终拼接时合并回去。
 - **断点续传**：处理状态写入 `work_dir/state.json`，中断后重跑将跳过已完成片段。
 - **异常与重试**：单段失败自动重试（指数退避），最多 3 次。
-- **输入兼容**：公网 URL / base64 / 本地文件（本地文件自动经
-  `/api/comfy/upload/file` 上传）。
+- **输入兼容**：公网 URL / base64 / 本地文件。本地文件默认编码为
+  ``data:*;base64`` 写入 ``input_values``（``ROLESWAP_INPUT_MODE=base64``），
+  避免部分代理上传端点返回 405；也可设为 ``upload`` 或 ``auto``。
 
 ---
 
