@@ -23,7 +23,9 @@ MODE_MOTION_TRANSFER = True
 
 DEFAULT_NEGATIVE_PROMPT = (
     "色调艳丽，过曝，静态，细节模糊不清，字幕，画面，静止，整体发灰，最差质量，"
-    "低质量，JPEG压缩残留，丑陋的，残缺的，多余…"
+    "低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，"
+    "画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，"
+    "杂乱的背景，三条腿，背景人很多，倒着走"
 )
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ DEFAULT_INPUT_VALUES: Dict[str, Any] = {
     "42:steps": 6,
     "42:cfg": 1,
     "42:shift": 5,
+    "42:scheduler": "dpm++_sde",
     "42:riflex_freq_index": 0,
     "42:denoise_strength": 1,
     "42:rope_function": "comfy",
@@ -269,6 +272,7 @@ def build_payload(
         "42:shift": float(opts.shift),
         "46:video": video,
         "46:skip_first_frames": int(opts.skip_first_frames),
+        "46:force_rate": float(opts.fps),
         "47:image": image,
         "43:context_overlap": int(opts.context_overlap),
         "56:positive_prompt": opts.positive_prompt,

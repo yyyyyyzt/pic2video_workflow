@@ -11,6 +11,7 @@ import random
 import re
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 import requests
 
@@ -208,7 +209,7 @@ class RoleSwapClient:
             本次推理实际帧数（写入 125:value）。长视频分段时传入片段帧数。
         """
         if seed is None:
-            seed = random.randint(0, 2**32 - 1)
+            seed = random.getrandbits(48)
 
         resolved_video = self._resolve_input(video, kind="video")
         resolved_image = self._resolve_input(face_image, kind="image")
@@ -412,27 +413,81 @@ class RoleSwapClient:
             return {"result": data}
         return data
 
-    @staticmethod
-    def _extract_output_url(data: Dict[str, Any]) -> Optional[str]:
+    def _extract_output_url(self, data: Dict[str, Any]) -> Optional[str]:
         """从结果响应中尽力提取输出视频 URL。
 
-        兼容多种常见返回结构：顶层 url / output / result，或嵌套的
-        outputs -> [ {url|filename} ] 等形式。
+        兼容：
+        - 顶层 url / video_url 字段
+        - ComfyUI history：outputs -> 节点62(VHS_VideoCombine) -> gifs
+        - 简化 API 包装的 output / results 字段
         """
-        # 1) 直接字段
         for key in ("video_url", "output_url", "url", "result_url"):
             val = data.get(key)
             if isinstance(val, str) and val:
-                return val
+                return self._normalize_output_ref(val)
 
-        # 2) output / result 为字符串或列表 / 字典
-        for key in ("output", "result", "outputs", "results"):
+        outputs = data.get("outputs")
+        if isinstance(outputs, dict):
+            node_order = ["62"] + [k for k in outputs if k != "62"]
+            for node_id in node_order:
+                url = self._extract_from_node_output(outputs.get(node_id))
+                if url:
+                    return url
+        elif isinstance(outputs, list):
+            for item in outputs:
+                url = self._dig_url(item)
+                if url:
+                    return self._normalize_output_ref(url)
+
+        for key in ("output", "result", "results"):
             val = data.get(key)
-            url = RoleSwapClient._dig_url(val)
+            url = self._dig_url(val)
             if url:
-                return url
+                return self._normalize_output_ref(url)
 
         return None
+
+    def _extract_from_node_output(self, node_out: Any) -> Optional[str]:
+        if not isinstance(node_out, dict):
+            return None
+        for key in ("gifs", "videos", "images"):
+            items = node_out.get(key)
+            if isinstance(items, list):
+                for item in items:
+                    url = self._media_item_to_url(item)
+                    if url:
+                        return url
+        return self._dig_url(node_out)
+
+    def _media_item_to_url(self, item: Any) -> Optional[str]:
+        if isinstance(item, str):
+            return self._normalize_output_ref(item)
+        if isinstance(item, dict):
+            for key in ("url", "video_url", "output_url", "fullpath"):
+                val = item.get(key)
+                if isinstance(val, str) and val:
+                    return self._normalize_output_ref(val)
+            filename = item.get("filename") or item.get("name")
+            if isinstance(filename, str) and filename:
+                return self._build_view_url(
+                    filename=filename,
+                    subfolder=str(item.get("subfolder") or ""),
+                    ftype=str(item.get("type") or "output"),
+                )
+        return None
+
+    def _build_view_url(self, *, filename: str, subfolder: str, ftype: str) -> str:
+        params = {"filename": filename, "type": ftype}
+        if subfolder:
+            params["subfolder"] = subfolder
+        return f"{self.config.url(self.config.view_path)}?{urlencode(params)}"
+
+    def _normalize_output_ref(self, ref: str) -> str:
+        if self._is_url(ref):
+            return ref
+        if ref.lower().endswith((".mp4", ".webm", ".mov", ".mkv", ".gif")):
+            return self._build_view_url(filename=ref, subfolder="", ftype="output")
+        return ref
 
     @staticmethod
     def _dig_url(val: Any) -> Optional[str]:
@@ -446,7 +501,7 @@ class RoleSwapClient:
                 return val
             return None
         if isinstance(val, dict):
-            for key in ("video_url", "output_url", "url", "filename", "name"):
+            for key in ("video_url", "output_url", "url", "filename", "name", "fullpath"):
                 if key in val:
                     found = RoleSwapClient._dig_url(val[key])
                     if found:

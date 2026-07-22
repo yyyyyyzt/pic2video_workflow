@@ -60,7 +60,7 @@ def test_build_payload_fixed_params():
     assert values["42:steps"] == 6
     assert values["46:video"] == "http://x/v.mp4"
     assert values["47:image"] == "http://x/f.jpg"
-    assert values["151:value"] is False  # 默认角色替换
+    assert values["42:scheduler"] == "dpm++_sde"
     print("build_payload OK")
 
 

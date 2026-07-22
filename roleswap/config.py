@@ -59,6 +59,7 @@ class RoleSwapConfig:
     submit_path: str = "/api/workflow/generate"
     result_path: str = "/api/workflow/result"
     upload_path: str = "/api/comfy/upload/file"
+    view_path: str = "/api/comfy/view"
 
     @classmethod
     def from_env(cls) -> "RoleSwapConfig":
@@ -95,6 +96,9 @@ class RoleSwapConfig:
             max_base64_bytes=max_base64_bytes,
             upload_path=os.getenv(
                 "ROLESWAP_UPLOAD_PATH", "/api/comfy/upload/file"
+            ).strip(),
+            view_path=os.getenv(
+                "ROLESWAP_VIEW_PATH", "/api/comfy/view"
             ).strip(),
         )
 

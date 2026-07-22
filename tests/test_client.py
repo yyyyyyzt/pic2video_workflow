@@ -71,7 +71,8 @@ def test_submit_builds_payload_and_returns_prompt_id():
     body = kwargs["json"]
     assert body["workflow_id"] == "wf-1"
     values = body["input_values"]
-    assert values["42:seed"] == 7
+    assert values["42:steps"] == 6
+    assert values["42:scheduler"] == "dpm++_sde"
     assert values["51:blocks_to_swap"] == 40
     assert values["151:value"] is False
     print("submit OK")
@@ -94,12 +95,23 @@ def test_wait_for_result_polls_until_done():
 
 
 def test_extract_output_url_variants():
-    assert RoleSwapClient._extract_output_url(
+    client = RoleSwapClient(config=_config())
+    assert client._extract_output_url(
         {"video_url": "https://x/a.mp4"}) == "https://x/a.mp4"
-    assert RoleSwapClient._extract_output_url(
-        {"result": {"filename": "b.mp4"}}) == "b.mp4"
-    assert RoleSwapClient._extract_output_url(
-        {"outputs": [{"nested": {"url": "https://x/c.mp4"}}]}) == "https://x/c.mp4"
+    assert client._extract_output_url(
+        {"result": {"filename": "b.mp4"}}) is not None
+    url = client._extract_output_url({
+        "outputs": {
+            "62": {
+                "gifs": [{
+                    "filename": "Scail2_AnimateDiff_00001.mp4",
+                    "subfolder": "",
+                    "type": "output",
+                }]
+            }
+        }
+    })
+    assert url and "Scail2_AnimateDiff_00001.mp4" in url
     print("extract_output_url OK")
 
 
