@@ -97,6 +97,28 @@ textarea {
   margin-bottom: 12px;
 }
 
+.subsection-title {
+  margin: 18px 0 6px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.subsection-hint {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+}
+
+.checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
 textarea {
   resize: vertical;
   min-height: 64px;

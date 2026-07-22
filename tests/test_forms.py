@@ -35,7 +35,46 @@ def test_parse_workflow_options_motion_transfer():
     print("parse motion_transfer OK")
 
 
+def test_parse_matting_options():
+    opts = parse_workflow_options({
+        "refine_foreground": "1",
+        "rem_add_background": "green",
+        "ref_background_color": "#FFFFFF",
+        "detection_threshold": "0.45",
+        "ref_strength": "0.9",
+    })
+    assert opts.refine_foreground is True
+    assert opts.rem_add_background == "green"
+    assert opts.ref_background_color == "#FFFFFF"
+    assert opts.detection_threshold == 0.45
+    assert opts.ref_strength == 0.9
+    assert validate_workflow_options(opts) is None
+    print("parse matting OK")
+
+
+def test_build_payload_matting_fields():
+    from roleswap import workflow_template as wf
+
+    opts = wf.WorkflowOptions(
+        refine_foreground=True,
+        rem_add_background="green",
+        ref_background_color="#FFFFFF",
+        detection_threshold=0.45,
+    )
+    payload = wf.build_payload(
+        workflow_id="wf-1", video="v", image="i", seed=1, options=opts
+    )
+    values = payload["input_values"]
+    assert values["104:refine_foreground"] is True
+    assert values["104:add_background"] == "green"
+    assert values["48:background_color"] == "#FFFFFF"
+    assert values["91:detection_threshold"] == 0.45
+    print("build_payload matting OK")
+
+
 if __name__ == "__main__":
     test_parse_workflow_options_defaults()
     test_parse_workflow_options_motion_transfer()
+    test_parse_matting_options()
+    test_build_payload_matting_fields()
     print("\nALL FORM TESTS PASSED")

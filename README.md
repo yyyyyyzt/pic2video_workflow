@@ -219,7 +219,13 @@ client.download(url, "clip_swapped.mp4")
 | `positive_prompt` | `56:positive_prompt` | "" | 正向提示词 |
 | `negative_prompt` | `56:negative_prompt` | 内置 | 负向提示词 |
 | `pose_strength` | `159:pose_strength` | 1.0 | 姿态强度 |
-| `ref_strength` | `159:ref_strength` | 1.0 | 参考强度 |
+| `ref_strength` | `159:ref_strength` | 1.0 | 参考强度（绿幕可试 0.85~0.95） |
+| `refine_foreground` | `104:refine_foreground` | false | 前景边缘精修，减轻白边 |
+| `rem_add_background` | `104:add_background` | green | 抠图后铺底色（绿幕推荐 green） |
+| `ref_background_color` | `48/49:background_color` | #FFFFFF | 参考图缩放补底色 |
+| `detection_threshold` | `91/97:detection_threshold` | 0.5 | 人体检测阈值 |
+| `preserve_main_ref_background` | `159:preserve_main_ref_background` | false | 是否保留参考图背景 |
+| `prefix_alpha_crop` | `159:prefix_alpha_crop` | false | Alpha 前缀裁剪 |
 | `duration` | — | 180 | 长视频目标时长（秒，本地分段） |
 
 > API 请求体格式为 ``{"workflow_id": "...", "input_values": {"42:steps": 6, ...}}``。

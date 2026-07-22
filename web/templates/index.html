@@ -90,14 +90,52 @@
             <input type="number" name="pose_strength" value="1.0" min="0" max="2" step="0.05" />
           </label>
           <label class="field">
-            <span>参考强度（159:ref_strength）</span>
-            <input type="number" name="ref_strength" value="1.0" min="0" max="2" step="0.05" />
+            <span>参考强度（159:ref_strength，绿幕可试 0.85~0.95）</span>
+            <input type="number" name="ref_strength" value="0.9" min="0" max="2" step="0.05" />
           </label>
           <label class="field">
             <span>上下文重叠（43:context_overlap）</span>
             <input type="number" name="context_overlap" value="16" min="0" max="32" />
           </label>
         </div>
+
+        <h3 class="subsection-title">抠图 / 背景（绿幕视频 & 白底参考图）</h3>
+        <p class="muted subsection-hint">
+          绿幕素材建议开启「前景边缘精修」；白底人脸参考图请将参考图补底色设为 #FFFFFF。
+        </p>
+        <div class="grid-3">
+          <label class="field checkbox-field">
+            <span>前景边缘精修（104:refine_foreground）</span>
+            <input type="checkbox" name="refine_foreground" value="1" />
+          </label>
+          <label class="field checkbox-field">
+            <span>保留参考图背景（159:preserve_main_ref_background）</span>
+            <input type="checkbox" name="preserve_main_ref_background" value="1" />
+          </label>
+          <label class="field checkbox-field">
+            <span>Alpha 前缀裁剪（159:prefix_alpha_crop）</span>
+            <input type="checkbox" name="prefix_alpha_crop" value="1" />
+          </label>
+          <label class="field">
+            <span>抠图后铺底（104:add_background）</span>
+            <select name="rem_add_background">
+              <option value="green" selected>green（绿幕推荐）</option>
+              <option value="black">black</option>
+              <option value="white">white</option>
+              <option value="none">none</option>
+              <option value="transparent">transparent</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>人体检测阈值（91/97:detection_threshold）</span>
+            <input type="number" name="detection_threshold" value="0.5" min="0" max="1" step="0.05" />
+          </label>
+          <label class="field">
+            <span>参考图补底色（48/49:background_color）</span>
+            <input type="text" name="ref_background_color" value="#FFFFFF" placeholder="#FFFFFF" />
+          </label>
+        </div>
+
         <label class="field">
           <span>正向提示词（56:positive_prompt）</span>
           <textarea name="positive_prompt" rows="2" placeholder="可选"></textarea>

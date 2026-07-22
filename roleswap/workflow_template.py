@@ -218,6 +218,13 @@ class WorkflowOptions:
     pose_strength: float = 1.0
     ref_strength: float = 1.0
     context_overlap: int = 16
+    # 抠图 / 背景（节点 104 BEN2、参考图缩放 48/49、检测 91/97）
+    refine_foreground: bool = False
+    rem_add_background: str = "green"
+    preserve_main_ref_background: bool = False
+    prefix_alpha_crop: bool = False
+    detection_threshold: float = 0.5
+    ref_background_color: str = "#FFFFFF"
     # 允许透传额外节点覆盖（高级用户）
     extra_input_values: Dict[str, Any] = field(default_factory=dict)
 
@@ -284,6 +291,14 @@ def build_payload(
         "151:value": opts.resolved_mode_value(),
         "159:pose_strength": float(opts.pose_strength),
         "159:ref_strength": float(opts.ref_strength),
+        "159:preserve_main_ref_background": bool(opts.preserve_main_ref_background),
+        "159:prefix_alpha_crop": bool(opts.prefix_alpha_crop),
+        "104:refine_foreground": bool(opts.refine_foreground),
+        "104:add_background": str(opts.rem_add_background),
+        "91:detection_threshold": float(opts.detection_threshold),
+        "97:detection_threshold": float(opts.detection_threshold),
+        "48:background_color": str(opts.ref_background_color),
+        "49:background_color": str(opts.ref_background_color),
     })
     if opts.extra_input_values:
         values.update(opts.extra_input_values)
