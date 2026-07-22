@@ -151,7 +151,7 @@ def create_app() -> Flask:
         if not job:
             return jsonify({"error": "任务不存在"}), 404
         data = _job_to_json(job)
-        data["log_tail"] = job_store.read_log_tail(job_id, lines=60)
+        data["log_tail"] = job_store.read_log_tail(job_id, lines=150)
         return jsonify(data)
 
     @app.post("/api/jobs/<job_id>/resume")
@@ -208,6 +208,7 @@ def _job_to_json(job) -> dict:
         "segments_total": job.segments_total,
         "progress_percent": progress,
         "failed_segments": job.failed_segments,
+        "segment_errors": job.segment_errors,
         "worker_pid": job.worker_pid,
         "download_url": (
             f"/download/{job.id}" if job.status == "completed" and job.output_path else None

@@ -102,6 +102,16 @@ function renderJobDetail(data) {
     jobLogEl.classList.remove("hidden");
   }
 
+  const segErrEl = document.getElementById("job-seg-errors");
+  if (data.segment_errors && data.segment_errors.length > 0) {
+    segErrEl.textContent = data.segment_errors
+      .map((e) => `段 ${e.index} (尝试${e.attempts}次):\n${e.error}`)
+      .join("\n\n---\n\n");
+    segErrEl.classList.remove("hidden");
+  } else if (segErrEl) {
+    segErrEl.classList.add("hidden");
+  }
+
   if (data.status === "completed") {
     downloadLink.href = data.download_url;
     downloadLink.classList.remove("hidden");

@@ -48,6 +48,8 @@ class RoleSwapConfig:
     result_timeout: int = 600
     poll_interval: float = 5.0
     http_timeout: float = 120.0
+    # 提交任务超时（base64 大 JSON 需更长时间），默认 600 秒
+    submit_timeout: float = 600.0
     # 本地文件输入方式：base64（推荐，API 原生支持）| upload | auto
     input_mode: str = "base64"
     # base64 模式下单文件最大字节数（默认 80MB）
@@ -88,6 +90,7 @@ class RoleSwapConfig:
             result_timeout=_get_int("ROLESWAP_RESULT_TIMEOUT", 600),
             poll_interval=_get_float("ROLESWAP_POLL_INTERVAL", 5.0),
             http_timeout=_get_float("ROLESWAP_HTTP_TIMEOUT", 120.0),
+            submit_timeout=_get_float("ROLESWAP_SUBMIT_TIMEOUT", 600.0),
             input_mode=input_mode,
             max_base64_bytes=max_base64_bytes,
             upload_path=os.getenv(

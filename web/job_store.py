@@ -33,6 +33,7 @@ class Job:
     worker_pid: Optional[int] = None
     # 最近失败片段摘要
     failed_segments: List[int] = field(default_factory=list)
+    segment_errors: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

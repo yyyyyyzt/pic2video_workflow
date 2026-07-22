@@ -16,6 +16,7 @@ import requests
 
 from . import workflow_template as wf
 from .config import RoleSwapConfig
+from .log_utils import describe_input_ref, get_logger
 from .upload_utils import (
     IMAGE_UPLOAD_CANDIDATES,
     VIDEO_UPLOAD_CANDIDATES,
@@ -26,6 +27,8 @@ from .upload_utils import (
 # 用于判断一个字符串输入是「公网 URL」「base64 data」还是「本地文件路径」。
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _DATA_URI_RE = re.compile(r"^data:", re.IGNORECASE)
+
+logger = get_logger("roleswap.client")
 
 
 class RoleSwapError(RuntimeError):
@@ -93,6 +96,12 @@ class RoleSwapClient:
             return self._input_cache[cache_key]
 
         resolved = self._materialize_local_file(value, kind=kind)
+        logger.info(
+            "解析本地 %s: %s -> %s",
+            kind,
+            value,
+            describe_input_ref(resolved),
+        )
         self._input_cache[cache_key] = resolved
         return resolved
 
@@ -113,6 +122,7 @@ class RoleSwapClient:
 
     def _encode_local_file(self, local_path: str, *, kind: str) -> str:
         size = os.path.getsize(local_path)
+        logger.info("base64 编码 %s: %d bytes (%.2f MB)", local_path, size, size / 1048576)
         if size > self.config.max_base64_bytes:
             raise RoleSwapError(
                 f"文件 {local_path} 大小 {size} 字节，超过 base64 上限 "
@@ -223,15 +233,36 @@ class RoleSwapClient:
         )
 
         url = self.config.url(self.config.submit_path)
-        resp = self.session.post(
+        import json as _json
+
+        payload_bytes = len(_json.dumps(payload, ensure_ascii=False))
+        logger.info(
+            "提交任务 -> %s | payload≈%.2fMB | video=%s | image=%s | "
+            "num_frames=%s seed=%s steps=%s",
             url,
-            json=payload,
-            headers=self._headers(),
-            timeout=self.config.http_timeout,
+            payload_bytes / 1048576,
+            describe_input_ref(resolved_video),
+            describe_input_ref(resolved_image),
+            num_frames or frame_load_cap,
+            seed,
+            steps,
         )
+
+        try:
+            resp = self.session.post(
+                url,
+                json=payload,
+                headers=self._headers(),
+                timeout=self.config.submit_timeout,
+            )
+        except requests.RequestException as exc:
+            logger.error("提交网络异常: %s", exc)
+            raise RoleSwapError(f"提交网络异常：{exc}") from exc
+
+        logger.debug("提交响应 status=%s body=%s", resp.status_code, resp.text[:2000])
         if resp.status_code >= 400:
             raise RoleSwapError(
-                f"提交失败（{resp.status_code}）：{resp.text[:500]}"
+                f"提交失败（{resp.status_code}）：{resp.text[:2000]}"
             )
 
         data = self._safe_json(resp)
@@ -242,6 +273,7 @@ class RoleSwapClient:
         )
         if not prompt_id:
             raise RoleSwapError(f"提交响应缺少 prompt_id：{data!r}")
+        logger.info("提交成功 prompt_id=%s", prompt_id)
         return str(prompt_id)
 
     # ------------------------------------------------------------------ #
@@ -271,19 +303,39 @@ class RoleSwapClient:
 
         url = self.config.url(self.config.result_path)
         deadline = time.time() + timeout
+        poll_count = 0
+        last_body = ""
 
         while True:
-            resp = self.session.get(
-                url,
-                params={"prompt_id": prompt_id},
-                headers=self._headers(),
-                timeout=self.config.http_timeout,
-            )
+            poll_count += 1
+            try:
+                resp = self.session.get(
+                    url,
+                    params={"prompt_id": prompt_id},
+                    headers=self._headers(),
+                    timeout=self.config.http_timeout,
+                )
+            except requests.RequestException as exc:
+                logger.warning("轮询网络异常 prompt_id=%s: %s", prompt_id, exc)
+                if time.time() >= deadline:
+                    raise RoleSwapError(f"轮询网络异常：{exc}") from exc
+                time.sleep(poll_interval)
+                continue
+
+            last_body = resp.text[:2000]
             if resp.status_code < 400:
                 data = self._safe_json(resp)
                 status = str(
                     data.get("status") or data.get("state") or ""
                 ).lower()
+
+                if poll_count == 1 or poll_count % 10 == 0:
+                    logger.debug(
+                        "轮询 #%d prompt_id=%s status=%s",
+                        poll_count,
+                        prompt_id,
+                        status or "unknown",
+                    )
 
                 if status in {"failed", "error"}:
                     raise RoleSwapError(
@@ -292,22 +344,27 @@ class RoleSwapClient:
 
                 output_url = self._extract_output_url(data)
                 if output_url:
+                    logger.info(
+                        "任务完成 prompt_id=%s polls=%d url=%s",
+                        prompt_id,
+                        poll_count,
+                        output_url[:200],
+                    )
                     return output_url
 
-                # 已完成但没解析到 URL —— 视为异常，避免死循环。
                 if status in {"completed", "success", "done"}:
                     raise RoleSwapError(
                         f"任务 {prompt_id} 显示完成但未找到输出 URL：{data!r}"
                     )
             elif resp.status_code not in {202, 404, 425}:
-                # 202/404/425 视为「还没就绪」，其余状态码视为错误。
                 raise RoleSwapError(
-                    f"查询结果失败（{resp.status_code}）：{resp.text[:500]}"
+                    f"查询结果失败（{resp.status_code}）：{resp.text[:2000]}"
                 )
 
             if time.time() >= deadline:
                 raise RoleSwapError(
-                    f"任务 {prompt_id} 等待超时（>{timeout}s）。"
+                    f"任务 {prompt_id} 等待超时（>{timeout}s，轮询 {poll_count} 次）。"
+                    f"最后响应：{last_body}"
                 )
             time.sleep(poll_interval)
 
@@ -319,20 +376,25 @@ class RoleSwapClient:
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
         # 支持相对 URL（后端可能只返回路径）
         full_url = output_url if self._is_url(output_url) else self.config.url(output_url)
-        with self.session.get(
-            full_url,
-            headers=self._headers(),
-            stream=True,
-            timeout=self.config.http_timeout,
-        ) as resp:
-            if resp.status_code >= 400:
-                raise RoleSwapError(
-                    f"下载失败（{resp.status_code}）：{resp.text[:500]}"
-                )
-            with open(dest_path, "wb") as fh:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        fh.write(chunk)
+        logger.info("下载输出 -> %s", full_url[:200])
+        try:
+            with self.session.get(
+                full_url,
+                headers=self._headers(),
+                stream=True,
+                timeout=self.config.http_timeout,
+            ) as resp:
+                if resp.status_code >= 400:
+                    raise RoleSwapError(
+                        f"下载失败（{resp.status_code}）：{resp.text[:2000]}"
+                    )
+                with open(dest_path, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        if chunk:
+                            fh.write(chunk)
+        except requests.RequestException as exc:
+            raise RoleSwapError(f"下载网络异常：{exc}") from exc
+        logger.info("下载完成 %s (%.2f MB)", dest_path, os.path.getsize(dest_path) / 1048576)
         return dest_path
 
     # ------------------------------------------------------------------ #

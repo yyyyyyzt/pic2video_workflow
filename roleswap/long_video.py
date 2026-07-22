@@ -12,6 +12,7 @@ import json
 import os
 import random
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from typing import Callable, List, Optional
@@ -19,9 +20,11 @@ from typing import Callable, List, Optional
 from . import video_utils as vu
 from . import workflow_template as wf
 from .client import RoleSwapClient, RoleSwapError
+from .log_utils import get_logger
 from .workflow_template import WorkflowOptions
 
 ProgressCallback = Callable[[str, dict], None]
+logger = get_logger("roleswap.long_video")
 
 
 @dataclass
@@ -203,10 +206,9 @@ class LongVideoProcessor:
         # 校验全部完成
         failed = [st for st in states if st.status != "done"]
         if failed:
-            raise RoleSwapError(
-                f"仍有 {len(failed)} 段未成功：{[s.index for s in failed]}。"
-                "可修复后重跑（断点续传将跳过已完成片段）。"
-            )
+            report = self._format_failure_report(failed)
+            logger.error("长视频处理失败：\n%s", report)
+            raise RoleSwapError(report)
 
         # 3) crossfade 拼接所有片段输出
         ordered_outputs = [st.output_path for st in sorted(states, key=lambda s: s.index)]
@@ -241,14 +243,37 @@ class LongVideoProcessor:
             return
         done = sum(1 for s in states if s.status == "done")
         failed = [s.index for s in states if s.status == "failed"]
+        segment_errors = [
+            {"index": s.index, "error": s.error, "attempts": s.attempts}
+            for s in states
+            if s.status == "failed" and s.error
+        ][:10]
         on_progress(
             message,
             {
                 "segments_done": done,
                 "segments_total": len(states),
                 "failed_segments": failed,
+                "segment_errors": segment_errors,
             },
         )
+
+    @staticmethod
+    def _format_failure_report(failed: List[SegmentState]) -> str:
+        """汇总失败片段的详细错误，便于排查 API 问题。"""
+        indices = [s.index for s in failed]
+        lines = [
+            f"仍有 {len(failed)} 段未成功：{indices}。",
+            "可修复后重跑（断点续传将跳过已完成片段）。",
+            "",
+            "=== 失败片段详情（前 5 段）===",
+        ]
+        for st in failed[:5]:
+            lines.append(f"\n--- 段 {st.index} | 尝试 {st.attempts} 次 | prompt_id={st.prompt_id} ---")
+            lines.append(st.error or "(无错误信息)")
+        if len(failed) > 5:
+            lines.append(f"\n... 另有 {len(failed) - 5} 段失败，详见 work_dir/state.json")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
     # 片段处理（含重试）
@@ -263,11 +288,23 @@ class LongVideoProcessor:
         """处理单个片段：提交 -> 等待 -> 下载。带重试。"""
         seg_output = os.path.join(work_dir, f"seg_{st.index:04d}_out.mp4")
         last_err: Optional[Exception] = None
+        seg_frames = st.end - st.start
+        input_size = (
+            os.path.getsize(st.input_path) if st.input_path and os.path.exists(st.input_path) else 0
+        )
+
+        logger.info(
+            "开始处理段 %d | 帧 %d-%d (%d帧) | 输入 %.2fMB",
+            st.index,
+            st.start,
+            st.end,
+            seg_frames,
+            input_size / 1048576,
+        )
 
         for attempt in range(1, params.max_retries + 1):
             st.attempts = attempt
             try:
-                seg_frames = st.end - st.start
                 wf_opts = params.workflow_options or WorkflowOptions()
                 wf_opts.steps = params.steps
                 wf_opts.cfg = params.cfg
@@ -293,11 +330,19 @@ class LongVideoProcessor:
                 st.output_path = seg_output
                 st.status = "done"
                 st.error = None
+                logger.info("段 %d 完成（第 %d 次尝试）prompt_id=%s", st.index, attempt, prompt_id)
                 print(f"[RoleSwap] 段 {st.index} 完成（第 {attempt} 次尝试）")
                 return st
-            except Exception as exc:  # noqa: BLE001 - 需要捕获以便重试
+            except Exception as exc:  # noqa: BLE001
                 last_err = exc
-                st.error = str(exc)
+                st.error = f"{exc}\n{traceback.format_exc()}"
+                logger.error(
+                    "段 %d 第 %d/%d 次失败: %s",
+                    st.index,
+                    attempt,
+                    params.max_retries,
+                    exc,
+                )
                 print(
                     f"[RoleSwap] 段 {st.index} 第 {attempt}/{params.max_retries} "
                     f"次失败：{exc}"

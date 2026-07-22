@@ -1,18 +1,15 @@
-"""后台任务 Worker：独立进程执行长视频生成，与 Web 请求生命周期解耦。
-
-用法：
-    python -m web.worker run <job_id>
-    python -m web.worker recover   # 扫描并修复僵尸 running 状态
-"""
+"""后台任务 Worker：独立进程执行长视频生成，与 Web 请求生命周期解耦。"""
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from dataclasses import fields
 
 from roleswap import generate_digital_human
+from roleswap.log_utils import setup_logging
 from roleswap.workflow_template import WorkflowOptions
 from web.job_store import JobStore, recover_stale_jobs
 
@@ -31,6 +28,8 @@ def run_job(job_id: str) -> int:
         print(f"任务不存在：{job_id}", file=sys.stderr)
         return 1
 
+    setup_logging(sink=lambda line: store.append_log(job_id, line))
+
     store.update(
         job_id,
         status="running",
@@ -39,18 +38,21 @@ def run_job(job_id: str) -> int:
         error=None,
     )
     store.append_log(job_id, f"[worker] 开始执行任务 {job_id}")
+    store.append_log(
+        job_id,
+        f"[worker] 配置: input_mode={os.getenv('ROLESWAP_INPUT_MODE', 'base64')} "
+        f"base_url={os.getenv('ROLESWAP_BASE_URL', '?')} "
+        f"debug={os.getenv('ROLESWAP_DEBUG', '0')}",
+    )
 
     wf_opts = _workflow_from_dict(manifest.get("workflow_options", {}))
 
     def on_progress(message: str, extra: dict | None = None) -> None:
         extra = extra or {}
-        updates = {"message": message}
-        if "segments_done" in extra:
-            updates["segments_done"] = extra["segments_done"]
-        if "segments_total" in extra:
-            updates["segments_total"] = extra["segments_total"]
-        if "failed_segments" in extra:
-            updates["failed_segments"] = extra["failed_segments"]
+        updates: dict = {"message": message}
+        for key in ("segments_done", "segments_total", "failed_segments", "segment_errors"):
+            if key in extra:
+                updates[key] = extra[key]
         store.update(job_id, **updates)
         store.append_log(job_id, f"[progress] {message}")
 
@@ -64,7 +66,7 @@ def run_job(job_id: str) -> int:
             cfg=wf_opts.cfg,
             shift=wf_opts.shift,
             seed=wf_opts.seed,
-            max_parallel=manifest.get("max_parallel", 2),
+            max_parallel=manifest.get("max_parallel", 1),
             work_dir=manifest.get("work_dir"),
             resume=manifest.get("resume", True),
             workflow_options=wf_opts,
