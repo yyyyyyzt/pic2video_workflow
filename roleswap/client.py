@@ -326,19 +326,17 @@ class RoleSwapClient:
             last_body = resp.text[:2000]
             if resp.status_code < 400:
                 data = self._safe_json(resp)
-                status = str(
-                    data.get("status") or data.get("state") or ""
-                ).lower()
+                status = self._infer_poll_status(data)
 
                 if poll_count == 1 or poll_count % 10 == 0:
                     logger.debug(
                         "轮询 #%d prompt_id=%s status=%s",
                         poll_count,
                         prompt_id,
-                        status or "unknown",
+                        status,
                     )
 
-                if status in {"failed", "error"}:
+                if status == "failed":
                     raise RoleSwapError(
                         f"任务 {prompt_id} 失败：{data.get('error') or data!r}"
                     )
@@ -353,10 +351,19 @@ class RoleSwapClient:
                     )
                     return output_url
 
-                if status in {"completed", "success", "done"}:
+                if status == "completed":
                     raise RoleSwapError(
                         f"任务 {prompt_id} 显示完成但未找到输出 URL：{data!r}"
                     )
+
+                if status == "pending" and time.time() >= deadline:
+                    deadline = time.time() + timeout
+                    if poll_count % 10 == 0:
+                        logger.info(
+                            "任务仍在排队 prompt_id=%s，已延长等待（轮询 #%d）",
+                            prompt_id,
+                            poll_count,
+                        )
             elif resp.status_code not in {202, 404, 425}:
                 raise RoleSwapError(
                     f"查询结果失败（{resp.status_code}）：{resp.text[:2000]}"
@@ -462,6 +469,26 @@ class RoleSwapClient:
         if not isinstance(data, dict):
             return {"result": data}
         return data
+
+    @staticmethod
+    def _infer_poll_status(data: Dict[str, Any]) -> str:
+        """从结果响应推断轮询状态（兼容 pending 字段）。"""
+        raw = str(data.get("status") or data.get("state") or "").lower()
+        if raw in {"failed", "error"}:
+            return "failed"
+        if raw in {"completed", "success", "done"}:
+            return "completed"
+        if data.get("pending") is True:
+            return "pending"
+        results = data.get("results")
+        if (
+            data.get("success") is True
+            and isinstance(results, list)
+            and len(results) == 0
+            and not raw
+        ):
+            return "pending"
+        return raw or "unknown"
 
     def _extract_output_url(self, data: Dict[str, Any]) -> Optional[str]:
         """从结果响应中尽力提取输出视频 URL。

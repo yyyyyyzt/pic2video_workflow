@@ -78,6 +78,15 @@ def test_submit_builds_payload_and_returns_prompt_id():
     print("submit OK")
 
 
+def test_infer_poll_status_pending():
+    client = RoleSwapClient(config=_config())
+    assert client._infer_poll_status(
+        {"success": True, "pending": True, "results": []}
+    ) == "pending"
+    assert client._infer_poll_status({"status": "processing"}) == "processing"
+    print("infer_poll_status OK")
+
+
 def test_wait_for_result_polls_until_done():
     session = FakeSession(
         post_responses=[],
@@ -92,6 +101,27 @@ def test_wait_for_result_polls_until_done():
     assert url == "https://x/out.mp4"
     assert len(session.get_calls) == 2
     print("wait_for_result OK")
+
+
+def test_wait_for_result_pending_extends_wait():
+    pending = {"success": True, "pending": True, "prompt_id": "p1", "results": []}
+    done = {
+        "success": True,
+        "pending": False,
+        "outputs": [{"url": "https://x/out.mp4"}],
+    }
+    session = FakeSession(
+        post_responses=[],
+        get_responses=[FakeResponse(200, pending)] * 5 + [FakeResponse(200, done)],
+    )
+    cfg = _config()
+    cfg.result_timeout = 1
+    cfg.poll_interval = 0.0
+    client = RoleSwapClient(config=cfg, session=session)
+    url = client.wait_for_result("p1")
+    assert url == "https://x/out.mp4"
+    assert len(session.get_calls) >= 6
+    print("wait_for_result pending extend OK")
 
 
 def test_extract_output_url_variants():
@@ -160,7 +190,9 @@ def test_download_writes_file(tmp_path=None):
 
 if __name__ == "__main__":
     test_submit_builds_payload_and_returns_prompt_id()
+    test_infer_poll_status_pending()
     test_wait_for_result_polls_until_done()
+    test_wait_for_result_pending_extends_wait()
     test_extract_output_url_variants()
     test_fix_view_url_strips_output_prefix()
     test_normalize_output_ref_with_path()

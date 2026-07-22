@@ -275,6 +275,11 @@ class LongVideoProcessor:
             lines.append(f"\n... 另有 {len(failed) - 5} 段失败，详见 work_dir/state.json")
         return "\n".join(lines)
 
+    @staticmethod
+    def _is_queue_wait_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "等待超时" in str(exc) or '"pending":true' in msg or "pending': true" in msg
+
     # ------------------------------------------------------------------ #
     # 片段处理（含重试）
     # ------------------------------------------------------------------ #
@@ -340,24 +345,40 @@ class LongVideoProcessor:
                 wf_opts.fps = params.fps
                 wf_opts.skip_first_frames = 0  # 已上传裁剪后的片段
 
-                prompt_id = self.client.submit(
-                    video=st.input_path,
-                    face_image=resolved_face,
-                    steps=params.steps,
-                    cfg=params.cfg,
-                    shift=params.shift,
-                    seed=params.seed,
-                    options=wf_opts,
-                    num_frames=seg_frames,
-                )
-                st.prompt_id = prompt_id
-                output_url = self.client.wait_for_result(prompt_id)
+                # 已有 prompt_id 且上次是排队超时：继续等待，不重复提交
+                if st.prompt_id and attempt > 1:
+                    logger.info(
+                        "段 %d 继续等待已有任务 prompt_id=%s（第 %d 次）",
+                        st.index,
+                        st.prompt_id,
+                        attempt,
+                    )
+                    output_url = self.client.wait_for_result(st.prompt_id)
+                else:
+                    prompt_id = self.client.submit(
+                        video=st.input_path,
+                        face_image=resolved_face,
+                        steps=params.steps,
+                        cfg=params.cfg,
+                        shift=params.shift,
+                        seed=params.seed,
+                        options=wf_opts,
+                        num_frames=seg_frames,
+                    )
+                    st.prompt_id = prompt_id
+                    output_url = self.client.wait_for_result(prompt_id)
+
                 self._download_with_retries(output_url, seg_output)
 
                 st.output_path = seg_output
                 st.status = "done"
                 st.error = None
-                logger.info("段 %d 完成（第 %d 次尝试）prompt_id=%s", st.index, attempt, prompt_id)
+                logger.info(
+                    "段 %d 完成（第 %d 次尝试）prompt_id=%s",
+                    st.index,
+                    attempt,
+                    st.prompt_id,
+                )
                 print(f"[RoleSwap] 段 {st.index} 完成（第 {attempt} 次尝试）")
                 return st
             except RoleSwapError as exc:
@@ -372,6 +393,15 @@ class LongVideoProcessor:
                         exc,
                     )
                     break
+                # 排队/轮询超时：保留 prompt_id，下次只继续等待
+                if st.prompt_id and self._is_queue_wait_error(exc):
+                    logger.warning(
+                        "段 %d GPU 仍在处理 prompt_id=%s，将续等而非重复提交",
+                        st.index,
+                        st.prompt_id,
+                    )
+                else:
+                    st.prompt_id = None
                 logger.error(
                     "段 %d 第 %d/%d 次失败: %s",
                     st.index,

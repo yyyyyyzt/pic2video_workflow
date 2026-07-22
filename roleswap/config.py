@@ -45,7 +45,7 @@ class RoleSwapConfig:
     base_url: str
     workflow_id: str
     api_key: str | None = None
-    result_timeout: int = 600
+    result_timeout: int = 1800
     poll_interval: float = 5.0
     http_timeout: float = 120.0
     # 提交任务超时（base64 大 JSON 需更长时间），默认 600 秒
@@ -88,7 +88,7 @@ class RoleSwapConfig:
             base_url=base_url.rstrip("/"),
             workflow_id=workflow_id,
             api_key=api_key,
-            result_timeout=_get_int("ROLESWAP_RESULT_TIMEOUT", 600),
+            result_timeout=_get_int("ROLESWAP_RESULT_TIMEOUT", 1800),
             poll_interval=_get_float("ROLESWAP_POLL_INTERVAL", 5.0),
             http_timeout=_get_float("ROLESWAP_HTTP_TIMEOUT", 120.0),
             submit_timeout=_get_float("ROLESWAP_SUBMIT_TIMEOUT", 600.0),
