@@ -1,22 +1,30 @@
 [project]
-name = "roleswap"
-version = "0.1.0"
-description = "角色替换（数字人）长视频生成封装库"
+name = "scailswap"
+version = "1.0.0"
+description = "基于 SCAIL-2 的长视频角色替换：分块 + 模型级锚定 + 渐变融合"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31.0",
-    "ffmpeg-python>=0.2.0",
     "opencv-python>=4.8.0",
     "numpy>=1.24.0",
     "python-dotenv>=1.0.0",
+    # API 服务
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.6.0",
+    # legacy Web（roleswap 旧封装，保留兼容）
     "flask>=3.0.0",
     "gunicorn>=22.0.0",
+    "ffmpeg-python>=0.2.0",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.6.0",
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
 ]
 
 [project.scripts]
@@ -27,11 +35,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["roleswap", "web"]
+packages = ["scailswap", "server", "roleswap", "web"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
