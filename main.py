@@ -1,18 +1,20 @@
-"""使用示例：5 行代码启动一个 3 分钟数字人长视频生成任务。
+"""最小使用示例：照片 + 参考视频 → 替换后的长视频。
 
 运行前：
-  1) cp .env.example .env  并填入 ROLESWAP_BASE_URL / ROLESWAP_WORKFLOW_ID
-  2) pip install -r requirements.txt  （并确保系统已安装 ffmpeg）
-  3) 准备好本地表演视频 performance.mp4 与目标人脸 face.jpg
+  1) ./setup.sh --with-comfyui   安装依赖并下载模型（GPU 机器）
+  2) python3 ComfyUI/main.py --port 8188   启动推理端
+  3) cp .env.example .env   （默认 COMFYUI_URL=http://127.0.0.1:8188 即可）
+  4) 准备 face.jpg（源角色照片）与 performance.mp4（1~2 分钟参考视频）
 """
 
-from roleswap import generate_digital_human
+from scailswap import swap_character
 
 if __name__ == "__main__":
-    output = generate_digital_human(
-        video="performance.mp4",   # 原始表演视频（本地路径）
-        face="face.jpg",           # 目标人脸照片
-        duration=180,              # 目标时长：180 秒
-        output_path="final.mp4",   # 最终输出
+    output = swap_character(
+        source_image="face.jpg",          # 源角色照片
+        target_video="performance.mp4",   # 参考视频（动作/口型/场景）
+        output_path="final.mp4",
+        prompt="一位金发男士穿黑色西装在街头演奏小提琴，行人从他身边走过",
+        on_progress=lambda e: print(f"[{e.percent:5.1f}%] {e.stage}: {e.message}"),
     )
     print(f"生成完成：{output}")

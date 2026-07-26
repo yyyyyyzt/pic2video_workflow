@@ -13,7 +13,13 @@ env/
 *.mp4
 *.aac
 *.roleswap_work/
+*.scailswap_work/
 output/
+data/
 web_uploads/
 web_outputs/
 web_jobs/
+
+# 自托管推理端与可选后处理（由 setup.sh 克隆）
+ComfyUI/
+Wav2Lip/

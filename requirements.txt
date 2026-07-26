@@ -1,18 +1,24 @@
-# 此文件由 pyproject.toml 维护，推荐使用 uv 管理依赖：
-#   uv sync
-# 若仍需 pip 兼容安装，可执行：
-#   uv export --no-hashes -o requirements.txt && pip install -r requirements.txt
+# 由 pyproject.toml 维护，推荐使用 uv 管理依赖：uv sync
+# pip 兼容安装：pip install -r requirements.txt
+# （兼容 Python 3.10+；自托管推理端 ComfyUI 的依赖由 setup.sh --with-comfyui 单独安装）
 
-# RoleSwap 数字人长视频生成封装库依赖
 requests>=2.31.0
-ffmpeg-python>=0.2.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 python-dotenv>=1.0.0
 
-# Web 测试页面
+# API 服务
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+pydantic>=2.6.0
+
+# legacy Web（roleswap 旧封装，保留兼容）
 flask>=3.0.0
 gunicorn>=22.0.0
+ffmpeg-python>=0.2.0
 
-# 开发 / lint
+# 开发 / 测试
 ruff>=0.6.0
+pytest>=8.0.0
+httpx>=0.27.0
