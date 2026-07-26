@@ -4,8 +4,11 @@ set -euo pipefail
 
 SERVER="${SERVER:-http://127.0.0.1:8000}"
 IMAGE="${1:-face.jpg}"
-VIDEO="${2:-performance.mp4}"
-PROMPT="${3:-一位金发男士穿黑色西装在街头演奏小提琴}"
+VIDEO="${2:-talk.mp4}"
+PROMPT="${3:-一位穿深色衬衫的男士坐在办公室里对着镜头讲话}"
+# 生成帧率 / 成片帧率（口播推荐 16 生成、30 输出）
+TARGET_FPS="${TARGET_FPS:-16}"
+OUTPUT_FPS="${OUTPUT_FPS:-30}"
 
 echo "== 1) 健康检查"
 curl -s "$SERVER/health" | python3 -m json.tool
@@ -16,6 +19,8 @@ JOB_ID=$(curl -s -X POST "$SERVER/api/v1/jobs" \
   -F "target_video=@$VIDEO" \
   -F "prompt=$PROMPT" \
   -F "mode=replacement" \
+  -F "target_fps=$TARGET_FPS" \
+  -F "output_fps=$OUTPUT_FPS" \
   -F 'params_json={"seed": 42}' | python3 -c "import json,sys; print(json.load(sys.stdin)['job_id'])")
 echo "job_id=$JOB_ID"
 
