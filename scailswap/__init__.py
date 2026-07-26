@@ -8,13 +8,14 @@
 """
 
 from .chunking import ChunkPlanner, ChunkSpec
-from .engines import create_engine
+from .engines import AnchorMode, create_engine
 from .errors import EngineError, EngineOOMError, ScailSwapError
 from .facade import swap_character
 from .processor import LongVideoProcessor, ProcessorParams
 from .progress import ProgressEvent
 
 __all__ = [
+    "AnchorMode",
     "ChunkPlanner",
     "ChunkSpec",
     "EngineError",
@@ -27,4 +28,4 @@ __all__ = [
     "swap_character",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

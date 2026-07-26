@@ -21,11 +21,16 @@ def swap_character(
 ) -> str:
     """把 ``source_image`` 中的角色替换进 ``target_video``，输出长视频。
 
+    ``overrides`` 直接覆盖 :class:`ProcessorParams` 字段，常用的有
+    ``target_fps``（生成帧率，口播推荐 16）、``output_fps``（成片帧率）、
+    ``mode``、``seed``、``resolution_tier``。
+
     Examples
     --------
     >>> from scailswap import swap_character
-    >>> swap_character("face.jpg", "performance.mp4", "final.mp4",
-    ...                prompt="一位穿黑色西装的男士在街头演奏小提琴")
+    >>> swap_character("face.jpg", "talk.mp4", "final.mp4",
+    ...                prompt="一位穿深色衬衫的男士坐在办公室里对着镜头讲话",
+    ...                target_fps=16, output_fps=30)
     """
     p = params or ProcessorParams()
     if prompt:

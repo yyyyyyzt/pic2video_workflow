@@ -1,11 +1,13 @@
 """FakeEngine —— 无 GPU 的调试引擎（单元测试 / 管线演练用，不做真实生成）。
 
 行为上模拟真实引擎的关键语义，让 LongVideoProcessor 的分块、锚定、融合、
-音频链路可以在 CI 中被完整验证：
+帧率、音频链路可以在 CI 中被完整验证：
 
 - 输出帧 = 驱动帧加一层可辨识的色调偏移（模拟"生成"）；
-- 若提供 anchor_video，则输出的前 overlap 帧**直接复用锚点末尾帧**（模拟
-  previous_frames 冻结 latent 的效果，用于验证跨块衔接逻辑）。
+- LATENT 锚定：输出的前 overlap 帧**直接复用锚点视频末尾帧**（模拟
+  ``continue_motion`` / ``previous_frames`` 冻结 latent 的效果）；
+- REFERENCE 锚定：只记录收到的 ``anchor_images``，不复用像素（真实的参考级
+  锚定同样无法保证像素一致），用于验证 processor 会正确切到不重叠模式。
 """
 
 from __future__ import annotations
@@ -17,16 +19,28 @@ from typing import Optional
 import numpy as np
 
 from ..video_io import read_frames, write_chunk_video
-from .base import ChunkProgress, ChunkTask, Engine
+from .base import AnchorMode, ChunkProgress, ChunkTask, Engine
 
 
 class FakeEngine(Engine):
     name = "fake"
-    supports_anchor = True
+    anchor_mode = AnchorMode.LATENT
+    native_window = 81
+    native_overlap = 5
 
-    def __init__(self, output_dir: str = "./data/chunks", tint: int = 30):
+    def __init__(
+        self,
+        output_dir: str = "./data/chunks",
+        tint: int = 30,
+        anchor_mode: AnchorMode = AnchorMode.LATENT,
+        native_window: int = 81,
+        native_overlap: int = 5,
+    ) -> None:
         self.output_dir = output_dir
         self.tint = tint
+        self.anchor_mode = anchor_mode
+        self.native_window = native_window
+        self.native_overlap = native_overlap
         self.calls: list[ChunkTask] = []  # 供测试断言
 
     def generate_chunk(self, task: ChunkTask, on_progress: Optional[ChunkProgress] = None) -> str:

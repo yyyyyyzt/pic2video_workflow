@@ -31,7 +31,7 @@ import requests
 from ..config import ComfyUIConfig
 from ..errors import EngineError, EngineOOMError
 from ..video_io import count_frames
-from .base import ChunkProgress, ChunkTask, Engine
+from .base import AnchorMode, ChunkProgress, ChunkTask, Engine
 
 _OOM_MARKERS = (
     "out of memory",
@@ -48,8 +48,11 @@ def _looks_like_oom(text: str) -> bool:
 
 
 class ComfyUIEngine(Engine):
-    name = "comfyui"
-    supports_anchor = True  # 原生 previous_frames 锚定
+    name = "scail2"
+    anchor_mode = AnchorMode.LATENT  # 原生 previous_frames 锚定
+    # SCAIL-2 训练配置：81 帧窗口 / 5 帧 previous_frames
+    native_window = 81
+    native_overlap = 5
 
     def __init__(self, config: Optional[ComfyUIConfig] = None, output_dir: str = "./data/chunks"):
         self.cfg = config or ComfyUIConfig()
