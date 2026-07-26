@@ -72,10 +72,24 @@ def _save_upload(upload: UploadFile, dest_dir: str, kind: str) -> str:
 @app.post("/api/v1/jobs", response_model=JobCreated)
 async def create_job(
     source_image: UploadFile = File(..., description="源角色照片（其人物将替换进视频）"),
-    target_video: UploadFile = File(..., description="参考视频（提供动作/口型/场景）"),
+    target_video: UploadFile = File(..., description="参考视频（提供动作/口型/场景），时长无上限"),
     prompt: str = Form("", description="描述替换后的画面（建议详细描述角色外观与交互物体）"),
     mode: str = Form("replacement", description="replacement=角色替换 | animation=动作迁移"),
-    engine: Optional[str] = Form(None, description="comfyui（默认，长视频）/ fal / fake"),
+    engine: Optional[str] = Form(
+        None,
+        description="wan_animate（默认，口播最优）/ scail2 / dashscope / fal / fake",
+    ),
+    target_fps: Optional[float] = Form(
+        None,
+        description="生成帧率（时长不变）。口播推荐 16——Wan 系原生训练帧率，"
+        "帧数减半且更贴合训练分布。留空=跟随源视频",
+    ),
+    output_fps: Optional[float] = Form(
+        None, description="成片帧率，留空=等于 target_fps。可用于降帧生成后升回 30fps"
+    ),
+    interpolate_output: bool = Form(
+        False, description="升帧率时是否做运动补偿插帧（更顺滑但很慢）"
+    ),
     seed: Optional[int] = Form(None),
     steps: Optional[int] = Form(None),
     enable_wav2lip: bool = Form(False, description="是否用 Wav2Lip 做口型精修后处理"),
@@ -83,12 +97,15 @@ async def create_job(
     params_json: str = Form(
         "{}",
         description="其余 ProcessorParams 字段的 JSON 覆盖，"
-        '如 {"overlap_frames": 9, "resolution_tier": 704, "cfg": 1.0}',
+        '如 {"resolution_tier": 704, "cfg": 1.0, "chunk_codec": "crf"}',
     ),
 ):
     """提交生成任务。立即返回 job_id，生成在后台队列串行执行。"""
     if mode not in ("replacement", "animation"):
         raise HTTPException(400, f"mode 不合法：{mode}")
+    for label, value in (("target_fps", target_fps), ("output_fps", output_fps)):
+        if value is not None and not (1.0 <= value <= 120.0):
+            raise HTTPException(400, f"{label} 需在 1~120 之间，当前 {value}")
     try:
         overrides = json.loads(params_json or "{}")
         if not isinstance(overrides, dict):
@@ -100,6 +117,12 @@ async def create_job(
         raise HTTPException(400, f"params_json 含未知字段：{sorted(unknown)}")
 
     params: dict = {"prompt": prompt, "mode": mode, **overrides}
+    if target_fps is not None:
+        params["target_fps"] = target_fps
+    if output_fps is not None:
+        params["output_fps"] = output_fps
+    if interpolate_output:
+        params["interpolate_output"] = True
     if seed is not None:
         params["seed"] = seed
     if steps is not None:

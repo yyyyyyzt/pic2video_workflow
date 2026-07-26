@@ -2,15 +2,20 @@
 
 为什么不能简单切成不重叠的片段？
 ================================
-SCAIL-2 训练时的时序上下文是「81 帧窗口 + 5 帧重叠（步进 76）」。要让模型在
-生成第 i+1 段时"记得"第 i 段的角色状态，必须：
+Wan 系角色动画模型的时序上下文是固定窗口 + 固定重叠：Wan2.2-Animate 是
+「77 帧窗口 + 5 帧 continue_motion」，SCAIL-2 是「81 帧窗口 + 5 帧
+previous_frames」。要让模型在生成第 i+1 段时"记得"第 i 段的角色状态，必须：
 
 1. 相邻分块共享 ``overlap`` 帧**源内容**（驱动视频的同一批帧）；
-2. 把第 i 段**生成结果**的末尾 ``overlap`` 帧作为 ``previous_frames`` 锚点传给
-   第 i+1 段，模型将其 VAE 编码后冻结为新段 latent 的头部（不加噪、不重采样），
-   在"已知开头"的条件下续写后面的新帧。
+2. 把第 i 段**生成结果**的末尾 ``overlap`` 帧作为锚点传给第 i+1 段，模型将其
+   VAE 编码后冻结为新段 latent 的头部（不加噪、不重采样），在"已知开头"的
+   条件下续写后面的新帧。
 
-本模块只负责第 1 步的数学：把总帧数切成满足模型约束（帧数 4n+1、窗口上限）
+``overlap=0`` 是合法的退化情形：用于**参考级锚定**（:class:`AnchorMode.REFERENCE`）
+的引擎——此时新块开头由模型重新生成，与上一块结尾不是同一批像素，做 crossfade
+反而会产生鬼影，所以按不重叠切分、仅靠参考图与颜色匹配维持一致性。
+
+本模块只负责分块的数学：把总帧数切成满足模型约束（帧数 4n+1、窗口上限）
 的分块序列。锚定与融合分别在 engines / blending 中完成。
 """
 
@@ -76,17 +81,20 @@ class ChunkPlanner:
     Parameters
     ----------
     window:
-        每块最大帧数，需满足 4n+1。默认 81（模型训练值，不建议修改）。
+        每块最大帧数，需满足 4n+1。Wan2.2-Animate=77，SCAIL-2=81
+        （模型训练值，不建议修改）。
     overlap:
-        相邻块共享帧数，需满足 4n+1（VAE 时间压缩后恰为整数个 latent 帧）。
-        默认 5（模型训练值）。
+        相邻块共享帧数。>0 时需满足 4n+1（VAE 时间压缩后恰为整数个 latent 帧），
+        默认 5（模型训练值）。``0`` 表示不重叠切分，供参考级锚定的引擎使用。
     """
 
     def __init__(self, window: int = DEFAULT_WINDOW, overlap: int = DEFAULT_OVERLAP) -> None:
         if window < 5 or (window - 1) % 4 != 0:
             raise InvalidInputError(f"window 必须为 4n+1 且 >=5，当前 {window}")
-        if overlap < 1 or (overlap - 1) % 4 != 0:
-            raise InvalidInputError(f"overlap 必须为 4n+1 且 >=1，当前 {overlap}")
+        if overlap < 0:
+            raise InvalidInputError(f"overlap 不能为负，当前 {overlap}")
+        if overlap > 0 and (overlap - 1) % 4 != 0:
+            raise InvalidInputError(f"overlap 需为 0 或 4n+1，当前 {overlap}")
         if overlap >= window:
             raise InvalidInputError(f"overlap({overlap}) 必须小于 window({window})")
         self.window = window

@@ -1,21 +1,36 @@
-"""自托管 ComfyUI 引擎（主路线）。
+"""自托管 Wan2.2-Animate 引擎（口播场景主引擎）。
 
-用 ComfyUI **原生节点**（无需第三方自定义节点）逐块构建 SCAIL-2 工作流图：
+为什么口播选它而不是 SCAIL-2
+============================
+Wan2.2-Animate 把**身体动作**与**面部表情**解耦成两路条件分别注入：骨架
+（``pose_video``）做空间对齐的肢体控制，人脸裁剪（``face_video``，512×512）
+经隐式特征走注意力注入表情。对口播视频这种"身体几乎不动、面部微表情和口型
+占绝对主导"的素材，这条专门的面部通路让眨眼、眼神、口型的复刻明显更细腻——
+这正是 SCAIL-2 端到端方案相对薄弱的地方（它的强项是复杂 3D 动作与非人角色）。
 
-    UNETLoader(wan2.1_14B_SCAIL_2) ── LoRA(lightx2v蒸馏) ── LoRA(DPO) ── ModelSamplingSD3
-    CLIPLoader(umt5_xxl) → CLIPTextEncode(正/负向提示词)
-    LoadVideo(驱动分块) → GetVideoComponents → SAM3_VideoTrack ─┐
-    LoadImage(参考图)  → SAM3_Detect ──────────────────────────┤
-                                                    SCAIL2ColoredMask（按身份着色的掩码）
-    LoadVideo(锚点=上一块输出) → GetVideoComponents ────────────┐
-                                                               ▼
-    WanSCAILToVideo(pose_video, 掩码, 参考图, clip_vision, previous_frames←锚点)
-        → KSampler → VAEDecode → CreateVideo → SaveVideo
+全原生节点的预处理链（无需任何第三方自定义节点）
+==============================================
+官方 ComfyUI 工作流依赖 ``comfyui_controlnet_aux`` 的 DWPose 和 KJNodes 的
+``Points Editor``。后者是**交互式**节点（要手点人物位置），API 自动化根本用不了。
+本引擎改用 ComfyUI 原生节点复现同样的输入：
 
-长视频时间一致性的关键在 ``previous_frames``：WanSCAILToVideo 会取锚点视频的
-末尾 ``previous_frame_count``（默认 5）帧，经 VAE 编码后**冻结**为新块 latent 的
-头部（noise_mask=0，不加噪不重采样），模型在"已知开头"的条件下续写剩余帧。
-身份、服装、光影、动作速度的衔接由模型语义保证，而非事后拼接。
+    RTDETR_detect(class_name=person)          → 人体框（多人检测的前置条件）
+        → SDPoseKeypointExtractor            → 全身关键点（含 68 点人脸）
+            → SDPoseDrawKeypoints            → pose_video（骨架渲染）
+            → SDPoseFaceBBoxes + CropByBBoxes → face_video（512×512 人脸序列）
+    SAM3_VideoTrack + SAM3_TrackToMask        → character_mask（替代 Points Editor）
+
+替换模式（mix）额外接入 ``background_video``（= 驱动视频原片）与
+``character_mask``：模型只在掩码区域重绘新角色，掩码外保留原始背景与光照，
+再叠加官方 relight LoRA 让人物与环境光色一致。
+动作迁移模式（move）不接这两路，背景来自参考图。
+
+长视频锚定与 SCAIL-2 同构：``continue_motion`` 收上一块的解码输出，
+节点取其末尾 ``continue_motion_max_frames``（训练值 5）帧编码后冻结为新块
+latent 头部。窗口是 77 帧（约 4.8s @16fps）。
+
+注意采样后需要按节点输出的 ``trim_latent`` / ``trim_image`` 裁掉头部的参考帧
+与锚点帧，否则输出会多出参考图那几帧。
 """
 
 from __future__ import annotations
@@ -28,7 +43,7 @@ from typing import Optional
 
 import requests
 
-from ..config import ComfyUIConfig
+from ..config import WanAnimateConfig
 from ..errors import EngineError, EngineOOMError
 from ..video_io import count_frames
 from .base import AnchorMode, ChunkProgress, ChunkTask, Engine
@@ -47,15 +62,19 @@ def _looks_like_oom(text: str) -> bool:
     return any(marker in lowered for marker in _OOM_MARKERS)
 
 
-class ComfyUIEngine(Engine):
-    name = "scail2"
-    anchor_mode = AnchorMode.LATENT  # 原生 previous_frames 锚定
-    # SCAIL-2 训练配置：81 帧窗口 / 5 帧 previous_frames
-    native_window = 81
+class WanAnimateEngine(Engine):
+    name = "wan_animate"
+    anchor_mode = AnchorMode.LATENT
+    # Wan2.2-Animate 训练配置：77 帧窗口 / 5 帧 continue_motion
+    native_window = 77
     native_overlap = 5
 
-    def __init__(self, config: Optional[ComfyUIConfig] = None, output_dir: str = "./data/chunks"):
-        self.cfg = config or ComfyUIConfig()
+    def __init__(
+        self,
+        config: Optional[WanAnimateConfig] = None,
+        output_dir: str = "./data/chunks",
+    ) -> None:
+        self.cfg = config or WanAnimateConfig()
         self.base_url = self.cfg.base_url.rstrip("/")
         self.client_id = f"scailswap-{uuid.uuid4().hex[:12]}"
         self.output_dir = output_dir
@@ -66,54 +85,58 @@ class ComfyUIEngine(Engine):
     # ------------------------------------------------------------------ #
     def _get(self, path: str, **kwargs) -> requests.Response:
         try:
-            resp = self._session.get(
+            return self._session.get(
                 f"{self.base_url}{path}", timeout=self.cfg.http_timeout, **kwargs
             )
         except requests.RequestException as exc:
             raise EngineError(f"ComfyUI 请求失败 GET {path}: {exc}") from exc
-        return resp
 
     def _post(self, path: str, **kwargs) -> requests.Response:
         try:
-            resp = self._session.post(
+            return self._session.post(
                 f"{self.base_url}{path}", timeout=self.cfg.http_timeout, **kwargs
             )
         except requests.RequestException as exc:
             raise EngineError(f"ComfyUI 请求失败 POST {path}: {exc}") from exc
-        return resp
 
     def health_check(self) -> dict:
         try:
             resp = self._get("/system_stats")
             resp.raise_for_status()
-            stats = resp.json()
-            return {"engine": self.name, "ok": True, "system_stats": stats.get("system", {})}
+            return {
+                "engine": self.name,
+                "ok": True,
+                "anchor_mode": self.anchor_mode.value,
+                "window": self.native_window,
+                "system_stats": resp.json().get("system", {}),
+            }
         except Exception as exc:  # noqa: BLE001
-            return {"engine": self.name, "ok": False, "error": str(exc)}
+            return {
+                "engine": self.name,
+                "ok": False,
+                "anchor_mode": self.anchor_mode.value,
+                "error": str(exc),
+            }
 
     # ------------------------------------------------------------------ #
-    # 显存管理（Phase 4）
+    # 显存管理
     # ------------------------------------------------------------------ #
     def free_memory(self, aggressive: bool = False) -> None:
-        """调用 ComfyUI /free 释放显存。
+        """调用 ComfyUI /free 释放显存（等价推理端 torch.cuda.empty_cache()）。
 
-        - free_memory=True 等价于在推理端执行 torch.cuda.empty_cache()；
-        - aggressive=True 时同时卸载模型权重（OOM 重试前的兜底手段）。
+        aggressive=True 时同时卸载模型权重——本引擎一张图里要装
+        Wan2.2-Animate 14B + SDPose + RT-DETR + SAM3 四个模型，OOM 时
+        卸载重载比继续挤显存更稳。
         """
         try:
-            self._post(
-                "/free",
-                json={"unload_models": bool(aggressive), "free_memory": True},
-            )
+            self._post("/free", json={"unload_models": bool(aggressive), "free_memory": True})
         except EngineError:
-            # 清显存失败不阻断主流程（可能是老版本 ComfyUI 无 /free）
             pass
 
     # ------------------------------------------------------------------ #
     # 文件上传 / 下载
     # ------------------------------------------------------------------ #
     def _upload(self, local_path: str, remote_name: str) -> str:
-        """把本地文件上传到 ComfyUI 的 input 目录，返回其 input 文件名。"""
         with open(local_path, "rb") as fh:
             resp = self._post(
                 "/upload/image",
@@ -152,16 +175,16 @@ class ComfyUIEngine(Engine):
         reference_name: str,
         anchor_name: Optional[str],
     ) -> dict:
-        """构建单块生成的 API 格式节点图。节点 id 用语义化字符串便于排错。"""
         cfg = self.cfg
-        replacement = task.mode == "replacement"
+        # mix=替换（保留原视频背景）；move=动作迁移（背景来自参考图）
+        is_replacement = task.mode == "replacement"
         g: dict[str, dict] = {}
 
         def node(nid: str, class_type: str, **inputs) -> list:
             g[nid] = {"class_type": class_type, "inputs": inputs}
             return [nid, 0]
 
-        # --- 扩散模型 + 蒸馏/DPO LoRA + 时序 shift ---
+        # --- Wan2.2-Animate 主模型 + 加速/重打光 LoRA ---
         model = node("unet", "UNETLoader", unet_name=cfg.unet, weight_dtype=cfg.unet_weight_dtype)
         if cfg.lora_lightx2v:
             model = node(
@@ -169,12 +192,12 @@ class ComfyUIEngine(Engine):
                 model=model, lora_name=cfg.lora_lightx2v,
                 strength_model=cfg.lora_lightx2v_strength,
             )
-        if cfg.lora_dpo:
-            # DPO LoRA：官方后训练权重，改善手部细节与口型/眼神同步
+        if is_replacement and cfg.lora_relight:
+            # relight LoRA 是官方为替换模式训练的：让插入的角色与原场景光照色调一致
             model = node(
-                "lora_dpo", "LoraLoaderModelOnly",
-                model=model, lora_name=cfg.lora_dpo,
-                strength_model=cfg.lora_dpo_strength,
+                "lora_relight", "LoraLoaderModelOnly",
+                model=model, lora_name=cfg.lora_relight,
+                strength_model=cfg.lora_relight_strength,
             )
         model = node("model_shift", "ModelSamplingSD3", model=model, shift=task.shift)
 
@@ -182,10 +205,9 @@ class ComfyUIEngine(Engine):
         clip = node("clip", "CLIPLoader", clip_name=cfg.text_encoder, type="wan", device="default")
         pos = node("prompt_pos", "CLIPTextEncode", clip=clip, text=task.prompt)
         neg = node("prompt_neg", "CLIPTextEncode", clip=clip, text=task.negative_prompt)
-
         vae = node("vae", "VAELoader", vae_name=cfg.vae)
 
-        # --- 参考图 + CLIP Vision ---
+        # --- 参考角色图 + CLIP Vision ---
         ref_image = node("ref_image", "LoadImage", image=reference_name)
         clip_vision = node("clip_vision", "CLIPVisionLoader", clip_name=cfg.clip_vision)
         cv_out = node(
@@ -193,78 +215,113 @@ class ComfyUIEngine(Engine):
             clip_vision=clip_vision, image=ref_image, crop="none",
         )
 
-        # --- 驱动视频分块 ---
+        # --- 驱动视频分块 → 帧序列 ---
         drv_video = node("driving_video", "LoadVideo", file=driving_name)
         node("driving_frames", "GetVideoComponents", video=drv_video)
         drv_frames = ["driving_frames", 0]
 
-        # --- SAM3 跟踪 → 按身份着色的掩码（SCAIL-2 的核心条件输入之一）---
-        node("sam3_ckpt", "CheckpointLoaderSimple", ckpt_name=cfg.sam3_checkpoint)
-        sam3_model = ["sam3_ckpt", 0]
-        sam3_clip = ["sam3_ckpt", 1]
-        sam3_cond_video = node(
-            "sam3_cond_video", "CLIPTextEncode", clip=sam3_clip, text=task.video_object
+        # --- 姿态 / 面部预处理（全原生）---
+        # RT-DETR 先框出人体：SDPose 在有 bbox 时关键点更准，多人场景更是必需
+        det_model = node(
+            "rtdetr_model", "UNETLoader",
+            unet_name=cfg.rtdetr_model, weight_dtype="default",
         )
-        sam3_cond_image = node(
-            "sam3_cond_image", "CLIPTextEncode", clip=sam3_clip, text=task.image_object
-        )
-        track = node(
-            "sam3_track", "SAM3_VideoTrack",
-            images=drv_frames, model=sam3_model, conditioning=sam3_cond_video,
-            detection_threshold=float(task.extra.get("detection_threshold", 0.5)),
-            max_objects=int(task.max_objects), detect_interval=1,
-        )
-        node(
-            "sam3_ref_detect", "SAM3_Detect",
-            model=sam3_model, image=ref_image, conditioning=sam3_cond_image,
+        person_bboxes = node(
+            "person_detect", "RTDETR_detect",
+            model=det_model, image=drv_frames,
             threshold=float(task.extra.get("detection_threshold", 0.5)),
-            refine_iterations=2, individual_masks=False,
+            class_name="person", max_detections=max(1, int(task.max_objects)),
         )
-        ref_mask = ["sam3_ref_detect", 0]
-        node(
-            "colored_mask", "SCAIL2ColoredMask",
-            driving_track_data=track, ref_track_data=ref_mask,
-            object_indices=str(task.extra.get("object_indices", "")),
-            sort_by="left_to_right", replacement_mode=replacement,
+        node("sdpose_ckpt", "CheckpointLoaderSimple", ckpt_name=cfg.sdpose_model)
+        keypoints = node(
+            "pose_keypoints", "SDPoseKeypointExtractor",
+            model=["sdpose_ckpt", 0], vae=["sdpose_ckpt", 2],
+            image=drv_frames, batch_size=int(cfg.pose_batch_size),
+            bboxes=person_bboxes,
         )
-        pose_mask = ["colored_mask", 0]
-        ref_colored_mask = ["colored_mask", 1]
+        # 骨架渲染 → pose_video（肢体控制信号）
+        pose_video = node(
+            "pose_render", "SDPoseDrawKeypoints",
+            keypoints=keypoints, draw_body=True, draw_hands=True, draw_face=True,
+            draw_feet=False, stick_width=4, face_point_size=3,
+            score_threshold=0.3, draw_head=True,
+        )
+        # 人脸裁剪 → face_video（表情/口型信号，节点内部会缩到 512×512）
+        face_bboxes = node(
+            "face_bboxes", "SDPoseFaceBBoxes",
+            keypoints=keypoints, scale=float(cfg.face_crop_scale), force_square=True,
+        )
+        face_video = node(
+            "face_crops", "CropByBBoxes",
+            image=drv_frames, bboxes=face_bboxes,
+            output_width=512, output_height=512, padding=0, keep_aspect="stretch",
+        )
 
-        # --- SCAIL-2 条件组装（含长视频锚定）---
-        scail_inputs = dict(
+        animate_inputs = dict(
             positive=pos, negative=neg, vae=vae,
             width=task.width, height=task.height,
             length=task.gen_length, batch_size=1,
-            pose_video=drv_frames, pose_video_mask=pose_mask,
-            replacement_mode=replacement,
-            pose_strength=float(task.extra.get("pose_strength", 1.0)),
-            pose_start=0.0, pose_end=1.0,
-            reference_image=ref_image, reference_image_mask=ref_colored_mask,
             clip_vision_output=cv_out,
+            reference_image=ref_image,
+            face_video=face_video,
+            pose_video=pose_video,
+            continue_motion_max_frames=task.anchor_frames,
             video_frame_offset=0,
-            previous_frame_count=task.anchor_frames,
         )
-        if anchor_name:
-            # 锚点：上一块的完整输出。节点内部取末尾 previous_frame_count 帧
-            # → VAE 编码 → 冻结为新块 latent 头部（模型级语义衔接的实现点）。
-            anchor_video = node("anchor_video", "LoadVideo", file=anchor_name)
-            node("anchor_frames", "GetVideoComponents", video=anchor_video)
-            scail_inputs["previous_frames"] = ["anchor_frames", 0]
-        node("scail", "WanSCAILToVideo", **scail_inputs)
 
-        # --- 采样 / 解码 / 落盘 ---
+        # --- 替换模式：原视频作背景 + SAM3 人物掩码限定重绘区域 ---
+        if is_replacement:
+            node("sam3_ckpt", "CheckpointLoaderSimple", ckpt_name=cfg.sam3_checkpoint)
+            sam3_cond = node(
+                "sam3_cond", "CLIPTextEncode",
+                clip=["sam3_ckpt", 1], text=task.video_object,
+            )
+            track = node(
+                "sam3_track", "SAM3_VideoTrack",
+                images=drv_frames, model=["sam3_ckpt", 0], conditioning=sam3_cond,
+                detection_threshold=float(task.extra.get("detection_threshold", 0.5)),
+                max_objects=int(task.max_objects), detect_interval=1,
+            )
+            character_mask = node(
+                "character_mask", "SAM3_TrackToMask",
+                track_data=track,
+                object_indices=str(task.extra.get("object_indices", "")),
+            )
+            animate_inputs["background_video"] = drv_frames
+            animate_inputs["character_mask"] = character_mask
+
+        # --- 长视频锚定：上一块输出送进 continue_motion ---
+        if anchor_name:
+            anchor_video = node("anchor_video", "LoadVideo", file=anchor_name)
+            node("anchor_frames_node", "GetVideoComponents", video=anchor_video)
+            animate_inputs["continue_motion"] = ["anchor_frames_node", 0]
+
+        node("animate", "WanAnimateToVideo", **animate_inputs)
+
+        # --- 采样 → 裁掉参考/锚点头部 → 解码 → 裁掉锚点帧 → 落盘 ---
         sampled = node(
             "sampler", "KSampler",
             model=model, seed=task.seed, steps=task.steps, cfg=task.cfg,
-            sampler_name="euler", scheduler="simple",
-            positive=["scail", 0], negative=["scail", 1], latent_image=["scail", 2],
+            sampler_name=cfg.sampler_name, scheduler=cfg.scheduler,
+            positive=["animate", 0], negative=["animate", 1], latent_image=["animate", 2],
             denoise=1.0,
         )
-        decoded = node("decode", "VAEDecode", samples=sampled, vae=vae)
-        video_out = node("create_video", "CreateVideo", images=decoded, fps=task.fps)
+        # trim_latent：参考图与锚点在 latent 序列头部占的长度，必须裁掉
+        trimmed = node(
+            "trim_latent", "TrimVideoLatent",
+            samples=sampled, trim_amount=["animate", 3],
+        )
+        decoded = node("decode", "VAEDecode", samples=trimmed, vae=vae)
+        # trim_image：解码后仍需丢掉 continue_motion 复用的那几帧像素，
+        # 使本块输出恰好是 gen_length 帧"新内容"
+        cut = node(
+            "drop_anchor_frames", "ImageFromBatch",
+            image=decoded, batch_index=["animate", 4], length=task.gen_length,
+        )
+        video_out = node("create_video", "CreateVideo", images=cut, fps=task.fps)
         node(
             "save_video", "SaveVideo",
-            video=video_out, filename_prefix=f"scailswap/chunk_{task.index:04d}",
+            video=video_out, filename_prefix=f"scailswap/wanani_{task.index:04d}",
             format="mp4", codec="h264",
         )
         return g
@@ -279,11 +336,14 @@ class ComfyUIEngine(Engine):
 
         run_id = uuid.uuid4().hex[:8]
         report(0.02, "上传素材到推理端…")
-        driving_name = self._upload(task.driving_video, f"ss_{run_id}_drv_{task.index:04d}.mp4")
-        reference_name = self._upload(task.reference_image, f"ss_{run_id}_ref{os.path.splitext(task.reference_image)[1] or '.png'}")
+        driving_name = self._upload(task.driving_video, f"wa_{run_id}_drv_{task.index:04d}.mp4")
+        ref_ext = os.path.splitext(task.reference_image)[1] or ".png"
+        reference_name = self._upload(task.reference_image, f"wa_{run_id}_ref{ref_ext}")
         anchor_name = None
         if task.anchor_video:
-            anchor_name = self._upload(task.anchor_video, f"ss_{run_id}_anchor_{task.index:04d}.mp4")
+            anchor_name = self._upload(
+                task.anchor_video, f"wa_{run_id}_anchor_{task.index:04d}.mp4"
+            )
 
         graph = self._build_graph(task, driving_name, reference_name, anchor_name)
         report(0.05, "提交工作流…")
@@ -298,23 +358,19 @@ class ComfyUIEngine(Engine):
             raise EngineError(f"提交响应缺少 prompt_id：{resp.text[:500]}")
 
         output_info = self._wait_for_history(prompt_id, report)
-
         dest = os.path.join(self.output_dir, f"chunk_{task.index:04d}_{run_id}.mp4")
         report(0.95, "下载分块结果…")
         self._download_output(output_info, dest)
 
         got = count_frames(dest)
-        if got != task.gen_length:
-            # H.264 封装偶尔多/少 1 帧属于容器层问题；差距大说明工作流异常
-            if abs(got - task.gen_length) > 2:
-                raise EngineError(
-                    f"分块 {task.index} 输出帧数异常：期望 {task.gen_length}，实际 {got}"
-                )
+        if abs(got - task.gen_length) > 2:
+            raise EngineError(
+                f"分块 {task.index} 输出帧数异常：期望 {task.gen_length}，实际 {got}"
+            )
         report(1.0, "分块完成")
         return dest
 
     def _wait_for_history(self, prompt_id: str, report) -> dict:
-        """轮询 /history 直到任务完成，返回输出视频的文件描述。"""
         deadline = time.time() + self.cfg.chunk_timeout
         while time.time() < deadline:
             hist_resp = self._get(f"/history/{prompt_id}")
@@ -329,22 +385,21 @@ class ComfyUIEngine(Engine):
                         raise EngineError(f"工作流执行失败：{raw[:2000]}")
                     if status.get("completed"):
                         return self._pick_video_output(hist.get("outputs", {}))
-            # 未完成：汇报队列位置
             queue_resp = self._get("/queue")
             if queue_resp.status_code == 200:
                 q = queue_resp.json()
                 pending = q.get("queue_pending", [])
                 running = q.get("queue_running", [])
                 pos = next(
-                    (i + 1 for i, item in enumerate(pending) if len(item) > 1 and item[1] == prompt_id),
+                    (i + 1 for i, item in enumerate(pending)
+                     if len(item) > 1 and item[1] == prompt_id),
                     None,
                 )
                 if pos:
                     report(0.08, f"GPU 排队中（第 {pos} 位）…")
                 elif any(len(item) > 1 and item[1] == prompt_id for item in running):
-                    report(0.5, "GPU 推理中…")
+                    report(0.5, "GPU 推理中（姿态提取 + 采样）…")
             time.sleep(self.cfg.poll_interval)
-        # 超时：中断远端任务避免占卡
         try:
             self._post("/interrupt")
         except EngineError:
@@ -353,13 +408,16 @@ class ComfyUIEngine(Engine):
 
     @staticmethod
     def _pick_video_output(outputs: dict) -> dict:
-        """在 history outputs 里找视频文件（SaveVideo 的输出键随版本变化，做兼容扫描）。"""
         video_exts = (".mp4", ".webm", ".mov", ".mkv")
         for node_output in outputs.values():
             for value in node_output.values():
                 if not isinstance(value, list):
                     continue
                 for item in value:
-                    if isinstance(item, dict) and str(item.get("filename", "")).lower().endswith(video_exts):
+                    if isinstance(item, dict) and str(
+                        item.get("filename", "")
+                    ).lower().endswith(video_exts):
                         return item
-        raise EngineError(f"工作流完成但未找到视频输出：{json.dumps(outputs, ensure_ascii=False)[:800]}")
+        raise EngineError(
+            f"工作流完成但未找到视频输出：{json.dumps(outputs, ensure_ascii=False)[:800]}"
+        )

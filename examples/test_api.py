@@ -19,9 +19,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="ScailSwap API 测试客户端")
     parser.add_argument("--server", default="http://127.0.0.1:8000")
     parser.add_argument("--image", required=True, help="源角色照片")
-    parser.add_argument("--video", required=True, help="参考视频（1~2 分钟）")
+    parser.add_argument("--video", required=True, help="参考视频（时长无上限）")
     parser.add_argument("--prompt", default="", help="描述替换后的画面")
     parser.add_argument("--mode", default="replacement", choices=["replacement", "animation"])
+    parser.add_argument("--engine", default=None, help="wan_animate / scail2 / dashscope / fal")
+    parser.add_argument(
+        "--target-fps", type=float, default=None,
+        help="生成帧率（口播推荐 16，Wan 原生训练帧率，帧数减半）",
+    )
+    parser.add_argument("--output-fps", type=float, default=None, help="成片帧率")
     parser.add_argument("--output", default="result.mp4")
     parser.add_argument("--params-json", default="{}", help='额外参数，如 {"seed": 42}')
     args = parser.parse_args()
@@ -35,11 +41,18 @@ def main() -> int:
         print("⚠️ 引擎不可用（ComfyUI 未启动？），任务可能失败", file=sys.stderr)
 
     # 2) 提交任务
+    form = {"prompt": args.prompt, "mode": args.mode, "params_json": args.params_json}
+    if args.engine:
+        form["engine"] = args.engine
+    if args.target_fps:
+        form["target_fps"] = str(args.target_fps)
+    if args.output_fps:
+        form["output_fps"] = str(args.output_fps)
     with open(args.image, "rb") as img, open(args.video, "rb") as vid:
         resp = requests.post(
             f"{base}/api/v1/jobs",
             files={"source_image": img, "target_video": vid},
-            data={"prompt": args.prompt, "mode": args.mode, "params_json": args.params_json},
+            data=form,
             timeout=600,
         )
     resp.raise_for_status()

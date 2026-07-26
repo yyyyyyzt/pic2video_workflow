@@ -18,7 +18,7 @@ import requests
 
 from ..config import FalConfig
 from ..errors import EngineError
-from .base import ChunkProgress, ChunkTask, Engine
+from .base import AnchorMode, ChunkProgress, ChunkTask, Engine
 
 _QUEUE_BASE = "https://queue.fal.run"
 
@@ -32,7 +32,9 @@ def _data_uri(path: str) -> str:
 
 class FalEngine(Engine):
     name = "fal"
-    supports_anchor = False
+    anchor_mode = AnchorMode.NONE
+    native_window = 81
+    native_overlap = 5
 
     def __init__(self, config: Optional[FalConfig] = None, output_dir: str = "./data/chunks"):
         self.cfg = config or FalConfig()
@@ -43,7 +45,12 @@ class FalEngine(Engine):
         self._session.headers["Authorization"] = f"Key {self.cfg.api_key}"
 
     def health_check(self) -> dict:
-        return {"engine": self.name, "ok": bool(self.cfg.api_key), "model": self.cfg.model_id}
+        return {
+            "engine": self.name,
+            "ok": bool(self.cfg.api_key),
+            "anchor_mode": self.anchor_mode.value,
+            "model": self.cfg.model_id,
+        }
 
     def generate_chunk(self, task: ChunkTask, on_progress: Optional[ChunkProgress] = None) -> str:
         def report(fraction: float, message: str) -> None:
