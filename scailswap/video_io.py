@@ -177,6 +177,68 @@ def write_chunk_video(
     return path
 
 
+def resample_fps(input_path: str, output_path: str, target_fps: float) -> str:
+    """把视频重采样到 ``target_fps``，**保持总时长不变**。
+
+    帧率转换用 ffmpeg 的 ``fps`` 滤镜（丢帧/复帧，不做运动插值），因为这一步的
+    输出只是送进模型的驱动信号，时间戳准确比中间帧平滑更重要。
+
+    时长不变是关键：后续所有分块/生成都基于重采样后的帧序列，最终把**未经改动
+    的原始音轨**合回来时，音画自然对齐——不需要任何音频变速。
+    """
+    if target_fps <= 0:
+        raise InvalidInputError(f"target_fps 必须为正数，当前 {target_fps}")
+    run_ffmpeg([
+        "-i", input_path,
+        "-vf", f"fps={target_fps}",
+        "-an",  # 音轨在最终 mux 阶段从原始文件取，这里不需要
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "14",
+        "-vsync", "cfr", "-r", str(target_fps),
+        output_path,
+    ])
+    return output_path
+
+
+def retime_fps(input_path: str, output_path: str, target_fps: float, interpolate: bool = False) -> str:
+    """改写成片帧率（时长不变）。
+
+    Parameters
+    ----------
+    interpolate:
+        True 时用 ffmpeg ``minterpolate`` 做运动补偿插帧（画面更顺滑，但很慢、
+        偶有插值伪影）；False 时只做复帧/丢帧。升帧率时才有意义。
+    """
+    if target_fps <= 0:
+        raise InvalidInputError(f"target_fps 必须为正数，当前 {target_fps}")
+    vf = (
+        f"minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:vsbmc=1"
+        if interpolate
+        else f"fps={target_fps}"
+    )
+    run_ffmpeg([
+        "-i", input_path, "-vf", vf,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "16",
+        "-c:a", "copy", "-r", str(target_fps),
+        output_path,
+    ])
+    return output_path
+
+
+def save_frame(video_path: str, frame_index: int, image_path: str) -> str:
+    """把视频的第 ``frame_index`` 帧（负数从末尾计）存成 PNG。
+
+    用于参考级锚定：把上一块输出的末帧提取成图片，作为下一块的附加参考图。
+    """
+    frames = read_frames(video_path) if frame_index < 0 else read_frames(video_path, frame_index, 1)
+    if not frames:
+        raise InvalidInputError(f"无法从 {video_path} 读取第 {frame_index} 帧")
+    frame = frames[frame_index] if frame_index < 0 else frames[0]
+    os.makedirs(os.path.dirname(os.path.abspath(image_path)) or ".", exist_ok=True)
+    if not cv2.imwrite(image_path, frame):
+        raise ScailSwapError(f"写出帧图片失败：{image_path}")
+    return image_path
+
+
 def extract_audio(video_path: str, audio_path: str) -> Optional[str]:
     """提取原始音轨（AAC）。无音轨返回 None。"""
     if not probe_video(video_path).has_audio:
