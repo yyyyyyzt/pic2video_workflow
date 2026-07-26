@@ -61,6 +61,7 @@
 ```
 pic2video_workflow/
 ├── DESIGN.md                        # 选型讨论与决策（先读这个）
+├── DEPLOY_AUTODL.md                 # AutoDL 部署：aria2 手动下模型 / 磁盘规划 / 启动
 ├── setup.sh                         # 一键安装（--with-comfyui / --with-scail2 / --with-wav2lip）
 ├── main.py                          # 最小使用示例
 ├── scailswap/                       # ★ 核心库
@@ -113,6 +114,7 @@ python3 ComfyUI/main.py --listen 127.0.0.1 --port 8188
 ./scripts/start_api.sh      # 默认 0.0.0.0:8000，Swagger 文档在 /docs
 ```
 
+**AutoDL 部署**（磁盘规划、aria2 手动下模型、端口与排错）见 **[DEPLOY_AUTODL.md](DEPLOY_AUTODL.md)**。
 ## 使用
 
 ### Python 一行调用
