@@ -13,8 +13,13 @@
 #   COMFYUI_DIR       ComfyUI 安装目录（默认 ./ComfyUI）
 #   ANIMATE_VARIANT   Wan2.2-Animate 精度 bf16|int8_convrot（默认 bf16；<32GB 显存用 int8_convrot）
 #   SCAIL_VARIANT     SCAIL-2 精度 fp16|fp8_scaled（默认 fp8_scaled）
+#   HF_ENDPOINT       Hugging Face 镜像（国内/AutoDL 可设 https://hf-mirror.com）
+#   HF_HUB_DISABLE_XET  默认 1：绕过易 401 的 Xet CAS 通道，改走普通 HTTPS 下载
 # ============================================================================
 set -euo pipefail
+
+# Xet CAS（cas-server.xethub.hf.co）在部分环境（含已 login）仍会 401；默认禁用更稳。
+export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 
 WITH_COMFYUI=0
 WITH_SCAIL2=0
@@ -62,17 +67,38 @@ if [ "$WITH_COMFYUI" = "1" ]; then
   # 必须用最新版 ComfyUI。本项目全程只用原生节点，不需要任何 custom_nodes。
   python3 -m pip install -r "$COMFYUI_DIR/requirements.txt"
 
-  # hf CLI（模型下载）
-  command -v hf >/dev/null 2>&1 || python3 -m pip install -U "huggingface_hub[cli]"
+  # hf CLI（模型下载）。强制升级：旧版 hf-xet 在 cas-server 上易 401。
+  python3 -m pip install -U "huggingface_hub[cli]" "hf_xet>=1.1.7"
+  if [ -n "${HF_ENDPOINT:-}" ]; then
+    echo "    使用 HF 镜像：HF_ENDPOINT=$HF_ENDPOINT"
+  fi
+  if [ "${HF_HUB_DISABLE_XET}" = "1" ]; then
+    echo "    已禁用 Xet（HF_HUB_DISABLE_XET=1），使用普通 HTTPS 下载"
+  fi
 
   dl() { # dl <repo> <repo内路径> <目标目录> [重命名]
     local repo="$1" file="$2" dest="$3" rename="${4:-}"
     local target="$dest/${rename:-$(basename "$file")}"
     if [ -f "$target" ]; then echo "    已存在，跳过：$target"; return; fi
     mkdir -p "$dest"
+    rm -rf "$dest/.hfdl"
     echo "    下载 $repo :: $file"
-    hf download "$repo" "$file" --local-dir "$dest/.hfdl" >/dev/null
-    mv "$dest/.hfdl/$file" "$target"
+    # 先按当前环境下载；若仍走 Xet 并 401，则强制禁用 Xet 重试一次
+    if ! HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET}" \
+         hf download "$repo" "$file" --local-dir "$dest/.hfdl"; then
+      echo "    ⚠️ 首次下载失败，强制禁用 Xet 重试…"
+      rm -rf "$dest/.hfdl"
+      HF_HUB_DISABLE_XET=1 hf download "$repo" "$file" --local-dir "$dest/.hfdl"
+    fi
+    # --local-dir 可能保留子目录结构，按相对路径取出
+    if [ -f "$dest/.hfdl/$file" ]; then
+      mv "$dest/.hfdl/$file" "$target"
+    else
+      local found
+      found="$(find "$dest/.hfdl" -type f -name "$(basename "$file")" | head -n1)"
+      [ -n "$found" ] || { echo "    ❌ 下载后未找到文件：$file"; rm -rf "$dest/.hfdl"; return 1; }
+      mv "$found" "$target"
+    fi
     rm -rf "$dest/.hfdl"
   }
 
