@@ -13,13 +13,32 @@
 #   COMFYUI_DIR       ComfyUI 安装目录（默认 ./ComfyUI）
 #   ANIMATE_VARIANT   Wan2.2-Animate 精度 bf16|int8_convrot（默认 bf16；<32GB 显存用 int8_convrot）
 #   SCAIL_VARIANT     SCAIL-2 精度 fp16|fp8_scaled（默认 fp8_scaled）
-#   HF_ENDPOINT       Hugging Face 镜像（国内/AutoDL 可设 https://hf-mirror.com）
+#   HF_ENDPOINT       Hugging Face 镜像。AutoDL/国内未设置时默认 https://hf-mirror.com
+#                     设为空字符串可强制直连官方：HF_ENDPOINT= ./setup.sh --with-comfyui
 #   HF_HUB_DISABLE_XET  默认 1：绕过易 401 的 Xet CAS 通道，改走普通 HTTPS 下载
 # ============================================================================
 set -euo pipefail
 
 # Xet CAS（cas-server.xethub.hf.co）在部分环境（含已 login）仍会 401；默认禁用更稳。
 export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+
+# AutoDL / 国内机直连 huggingface.co 极慢；未显式设置时自动走镜像。
+# 检测：主机名含 autodl、或存在 /etc/autodl 常见标记、或 AUTODL_* 环境变量。
+_autodl_like=0
+if [[ "$(hostname 2>/dev/null || true)" == *autodl* ]] \
+  || [[ -n "${AUTODL_CONTAINER_NAME:-}${AUTODL_REGION:-}" ]] \
+  || [[ -d /root/autodl-tmp ]] || [[ -d /autodl-pub ]]; then
+  _autodl_like=1
+fi
+if [ -z "${HF_ENDPOINT+x}" ]; then
+  # 变量完全未设置
+  if [ "$_autodl_like" = "1" ]; then
+    export HF_ENDPOINT="https://hf-mirror.com"
+  fi
+elif [ -z "${HF_ENDPOINT}" ]; then
+  # 显式设为空 → 直连官方，取消 export
+  unset HF_ENDPOINT
+fi
 
 WITH_COMFYUI=0
 WITH_SCAIL2=0
@@ -69,20 +88,42 @@ if [ "$WITH_COMFYUI" = "1" ]; then
 
   # hf CLI（模型下载）。强制升级：旧版 hf-xet 在 cas-server 上易 401。
   python3 -m pip install -U "huggingface_hub[cli]" "hf_xet>=1.1.7"
+  # aria2 多连接加速大文件（AutoDL 上通常比单线程 hf 快一个数量级）
+  if ! command -v aria2c >/dev/null 2>&1; then
+    (apt-get update -qq && apt-get install -y -qq aria2) >/dev/null 2>&1 || true
+  fi
   if [ -n "${HF_ENDPOINT:-}" ]; then
     echo "    使用 HF 镜像：HF_ENDPOINT=$HF_ENDPOINT"
+  else
+    echo "    直连 huggingface.co（国内/AutoDL 建议：export HF_ENDPOINT=https://hf-mirror.com）"
   fi
   if [ "${HF_HUB_DISABLE_XET}" = "1" ]; then
-    echo "    已禁用 Xet（HF_HUB_DISABLE_XET=1），使用普通 HTTPS 下载"
+    echo "    已禁用 Xet（HF_HUB_DISABLE_XET=1）"
   fi
 
   dl() { # dl <repo> <repo内路径> <目标目录> [重命名]
     local repo="$1" file="$2" dest="$3" rename="${4:-}"
     local target="$dest/${rename:-$(basename "$file")}"
+    local base_name
+    base_name="$(basename "$file")"
     if [ -f "$target" ]; then echo "    已存在，跳过：$target"; return; fi
     mkdir -p "$dest"
-    rm -rf "$dest/.hfdl"
     echo "    下载 $repo :: $file"
+
+    # 优先：镜像 + aria2 多连接（AutoDL 上 ~10-50MB/s，远快于直连 ~1MB/s）
+    if [ -n "${HF_ENDPOINT:-}" ] && command -v aria2c >/dev/null 2>&1; then
+      local url="${HF_ENDPOINT%/}/${repo}/resolve/main/${file}"
+      echo "    → aria2c 多连接：$url"
+      if aria2c -x 16 -s 16 -k 1M --file-allocation=none \
+          --console-log-level=notice --summary-interval=10 \
+          -d "$dest" -o "$base_name" "$url"; then
+        return 0
+      fi
+      echo "    ⚠️ aria2 失败，回退 hf download…"
+      rm -f "$dest/$base_name" "$dest/${base_name}.aria2"
+    fi
+
+    rm -rf "$dest/.hfdl"
     # 先按当前环境下载；若仍走 Xet 并 401，则强制禁用 Xet 重试一次
     if ! HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET}" \
          hf download "$repo" "$file" --local-dir "$dest/.hfdl"; then
@@ -95,7 +136,7 @@ if [ "$WITH_COMFYUI" = "1" ]; then
       mv "$dest/.hfdl/$file" "$target"
     else
       local found
-      found="$(find "$dest/.hfdl" -type f -name "$(basename "$file")" | head -n1)"
+      found="$(find "$dest/.hfdl" -type f -name "$base_name" | head -n1)"
       [ -n "$found" ] || { echo "    ❌ 下载后未找到文件：$file"; rm -rf "$dest/.hfdl"; return 1; }
       mv "$found" "$target"
     fi
