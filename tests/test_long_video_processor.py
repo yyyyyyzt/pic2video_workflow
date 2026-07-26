@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pytest
 
-from scailswap import LongVideoProcessor, ProcessorParams
+from scailswap import AnchorMode, LongVideoProcessor, ProcessorParams
 from scailswap.engines.fake_engine import FakeEngine
 from scailswap.errors import InvalidInputError
 from scailswap.video_io import probe_video
@@ -44,6 +44,10 @@ def small_params(**overrides) -> ProcessorParams:
     defaults = dict(window_frames=13, overlap_frames=5, seed=42)
     defaults.update(overrides)
     return ProcessorParams(**defaults)
+
+
+def small_engine(tmp) -> FakeEngine:
+    return FakeEngine(output_dir=str(tmp / "chunks"), native_window=13, native_overlap=5)
 
 
 def test_end_to_end_pipeline(workspace):
@@ -102,8 +106,7 @@ def test_resume_skips_done_chunks(workspace):
 
 def test_unanchored_engine_rejects_long_video(workspace):
     tmp, video, image = workspace
-    engine = FakeEngine(output_dir=str(tmp / "chunks"))
-    engine.supports_anchor = False  # 模拟 fal 引擎
+    engine = FakeEngine(output_dir=str(tmp / "chunks"), anchor_mode=AnchorMode.NONE)
     processor = LongVideoProcessor(engine, small_params())
     with pytest.raises(InvalidInputError, match="锚定"):
         processor.process(image, video, str(tmp / "final.mp4"))
@@ -111,14 +114,19 @@ def test_unanchored_engine_rejects_long_video(workspace):
 
 def test_unanchored_engine_allows_single_chunk(workspace):
     tmp, video, image = workspace
-    engine = FakeEngine(output_dir=str(tmp / "chunks"))
-    engine.supports_anchor = False
+    engine = FakeEngine(output_dir=str(tmp / "chunks"), anchor_mode=AnchorMode.NONE)
     # 窗口足够容纳整段（30 帧 < 81），单块提交合法
     processor = LongVideoProcessor(engine, ProcessorParams(seed=1))
     out = processor.process(image, video, str(tmp / "final.mp4"))
     assert probe_video(out).frame_count == 30
     assert len(engine.calls) == 1
     assert engine.calls[0].anchor_video is None
+
+
+def test_supports_anchor_derives_from_anchor_mode():
+    assert FakeEngine(anchor_mode=AnchorMode.LATENT).supports_anchor is True
+    assert FakeEngine(anchor_mode=AnchorMode.REFERENCE).supports_anchor is True
+    assert FakeEngine(anchor_mode=AnchorMode.NONE).supports_anchor is False
 
 
 def test_max_duration_cap(workspace):
