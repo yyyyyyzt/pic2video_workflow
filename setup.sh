@@ -49,10 +49,10 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 自托管 ComfyUI + SCAIL-2 模型（长视频主引擎）
+# 自托管 ComfyUI + Wan2.2-Animate（口播主引擎）；SCAIL-2 仅在 --with-scail2 时追加
 # --------------------------------------------------------------------------
 if [ "$WITH_COMFYUI" = "1" ]; then
-  echo "==> [3/4] 安装 ComfyUI 与模型权重"
+  echo "==> [3/4] 安装 ComfyUI 与 Wan2.2-Animate 模型权重"
   if [ ! -d "$COMFYUI_DIR" ]; then
     git clone https://github.com/comfyanonymous/ComfyUI "$COMFYUI_DIR"
   else
