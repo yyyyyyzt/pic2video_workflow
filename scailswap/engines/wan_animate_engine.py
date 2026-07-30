@@ -29,8 +29,9 @@ Wan2.2-Animate 把**身体动作**与**面部表情**解耦成两路条件分别
 节点取其末尾 ``continue_motion_max_frames``（训练值 5）帧编码后冻结为新块
 latent 头部。窗口是 77 帧（约 4.8s @16fps）。
 
-注意采样后需要按节点输出的 ``trim_latent`` / ``trim_image`` 裁掉头部的参考帧
-与锚点帧，否则输出会多出参考图那几帧。
+采样后只需按 ``trim_latent`` 裁掉参考图占用的 latent 头；``continue_motion``
+帧已落在 ``length`` 窗口内，应保留给 processor 做重叠区 crossfade
+（不要再用 ``trim_image`` 裁掉，否则会得到 77-5=72 帧）。
 """
 
 from __future__ import annotations
@@ -298,7 +299,7 @@ class WanAnimateEngine(Engine):
 
         node("animate", "WanAnimateToVideo", **animate_inputs)
 
-        # --- 采样 → 裁掉参考/锚点头部 → 解码 → 裁掉锚点帧 → 落盘 ---
+        # --- 采样 → 裁掉参考图 latent 头 → 解码 → 落盘 ---
         sampled = node(
             "sampler", "KSampler",
             model=model, seed=task.seed, steps=task.steps, cfg=task.cfg,
@@ -306,19 +307,16 @@ class WanAnimateEngine(Engine):
             positive=["animate", 0], negative=["animate", 1], latent_image=["animate", 2],
             denoise=1.0,
         )
-        # trim_latent：参考图与锚点在 latent 序列头部占的长度，必须裁掉
+        # trim_latent（animate 输出 3）：只裁掉 reference_image 占用的 latent 头。
+        # continue_motion 帧已计入 length 窗口头部（noise_mask=0 冻结），解码后仍是
+        # 完整 gen_length 帧——processor 要用重叠区做 crossfade，不能再裁。
+        # 若误用 trim_image（输出 4）做 ImageFromBatch，会变成 77-5=72 触发帧数校验失败。
         trimmed = node(
             "trim_latent", "TrimVideoLatent",
             samples=sampled, trim_amount=["animate", 3],
         )
         decoded = node("decode", "VAEDecode", samples=trimmed, vae=vae)
-        # trim_image：解码后仍需丢掉 continue_motion 复用的那几帧像素，
-        # 使本块输出恰好是 gen_length 帧"新内容"
-        cut = node(
-            "drop_anchor_frames", "ImageFromBatch",
-            image=decoded, batch_index=["animate", 4], length=task.gen_length,
-        )
-        video_out = node("create_video", "CreateVideo", images=cut, fps=task.fps)
+        video_out = node("create_video", "CreateVideo", images=decoded, fps=task.fps)
         node(
             "save_video", "SaveVideo",
             video=video_out, filename_prefix=f"scailswap/wanani_{task.index:04d}",
