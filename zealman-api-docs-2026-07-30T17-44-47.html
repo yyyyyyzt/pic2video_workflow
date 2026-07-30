@@ -1,0 +1,2272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zealman镜像API接口说明（v8.8）</title>
+  <style>
+    /* ---------- 主题变量（亮/暗按系统偏好自动切换） ---------- */
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --code-surface: #e2e8f0;
+      --code-border: #cbd5e1;
+      --code-inset: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+      --code-text: #1e293b;
+      --code-bg: #e2e8f0;
+      --docs-prose-bg: #ffffff;
+      --docs-code-col-bg: #f1f5f9;
+      --gray-50: #f8fafc;
+      --gray-100: #f1f5f9;
+      --gray-200: #e2e8f0;
+      --bd: #e2e8f0;
+      --nav-border: #f1f5f9;
+      --tx: #0f172a;
+      --tx-2: #64748b;
+      --tx-3: #64748b;
+      --primary: #3b82f6;
+      --primary-50: #eff6ff;
+      --primary-100: #dbeafe;
+      --active-bg: rgba(59, 130, 246, 0.08);
+
+      --m-get-bg: #ecfdf5;     --m-get-tx: #047857;
+      --m-post-bg: #eff6ff;    --m-post-tx: #1d4ed8;
+      --m-put-bg: #fffbeb;     --m-put-tx: #b45309;
+      --m-delete-bg: #fef2f2;  --m-delete-tx: #b91c1c;
+      --m-patch-bg: #f5f3ff;   --m-patch-tx: #6d28d9;
+
+      /* GitHub Light 高亮 */
+      --tk-cmt: #6e7781;
+      --tk-str: #0a3069;
+      --tk-kw:  #cf222e;
+      --tk-num: #0550ae;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #020912;
+        --surface: #060f1e;
+        --code-surface: #060d1b;
+        --code-border: rgba(0, 229, 255, 0.12);
+        --code-inset: none;
+        --code-text: #edf4ff;
+        --code-bg: #060d1b;
+        --docs-prose-bg: #060f1e;
+        --docs-code-col-bg: #0a1628;
+        --gray-50: #060f1e;
+        --gray-100: #0a1628;
+        --gray-200: #112240;
+        --bd: #112240;
+        --nav-border: #0a1628;
+        --tx: #edf4ff;
+        --tx-2: #8bbdd9;
+        --tx-3: #6a9abb;
+        --primary: #00e5ff;
+        --primary-50: rgba(0, 229, 255, 0.08);
+        --primary-100: rgba(0, 229, 255, 0.15);
+        --active-bg: rgba(0, 229, 255, 0.09);
+
+        --m-get-bg: rgba(34,197,94,0.10);    --m-get-tx: #6ee7b7;
+        --m-post-bg: rgba(56,139,253,0.10);  --m-post-tx: #79c0ff;
+        --m-put-bg: rgba(245,158,11,0.10);   --m-put-tx: #fcd34d;
+        --m-delete-bg: rgba(239,68,68,0.10); --m-delete-tx: #fca5a5;
+        --m-patch-bg: rgba(139,92,246,0.10); --m-patch-tx: #c4b5fd;
+
+        --tk-cmt: #8b949e;
+        --tk-str: #a5d6ff;
+        --tk-kw:  #ff7b72;
+        --tk-num: #79c0ff;
+      }
+    }
+
+    /* ---------- 重置 ---------- */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--tx);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', PingFangSC-Regular, 'Microsoft YaHei', sans-serif;
+      font-size: 14px; line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--primary); text-decoration: none; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace; }
+    p { margin: 0; }
+
+    /* ---------- 顶部条 ---------- */
+    header.page {
+      position: sticky; top: 0; z-index: 10;
+      background: var(--surface);
+      border-bottom: 1px solid var(--bd);
+      padding: 16px 24px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    header.page h1 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.35; letter-spacing: 0; color: var(--tx); }
+    header.page .sub { font-size: 13px; color: var(--tx-2); }
+    header.page .meta { margin-left: auto; font-size: 11px; color: var(--tx-3); }
+
+    /* ---------- 两栏布局（自适应铺满） ---------- */
+    .layout {
+      display: grid;
+      grid-template-columns: 18rem minmax(0, 1fr);
+      width: 100%;
+    }
+
+    /* ---------- 左侧大纲 ---------- */
+    .outline {
+      position: sticky; top: 49px;
+      align-self: start;
+      max-height: calc(100vh - 49px);
+      overflow-y: auto;
+      padding: 16px 12px 24px 16px;
+      box-shadow: 1px 0 0 0 var(--nav-border);
+      background: var(--surface);
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .outline ul { list-style: none; margin: 0; padding: 0; }
+    .outline .group-item { margin-bottom: 10px; }
+    .outline .group-link {
+      display: block; font-weight: 700; color: var(--tx);
+      padding: 10px 12px; border-radius: 0.75rem; font-size: 13px;
+    }
+    .outline .group-link:hover { background: var(--active-bg); color: var(--primary); }
+    .outline ul ul {
+      margin: 6px 0 0 0; padding: 0 0 0 4px;
+      list-style: none;
+      border-left: 0;
+    }
+    .outline ul ul li a {
+      display: block; padding: 6px 10px;
+      color: var(--tx-2); font-size: 13px; font-weight: 500; border-radius: 0.375rem;
+    }
+    .outline ul ul li a:hover { background: var(--active-bg); color: var(--primary); }
+    .outline .qs-link { color: var(--primary); font-weight: 500; }
+
+    /* ---------- 主内容（铺满） ---------- */
+    main.content { padding: 18px 28px 60px; min-width: 0; background: var(--bg); }
+    .baseurl-bar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding-bottom: 10px; margin-bottom: 16px;
+      border-bottom: 1px solid var(--bd);
+    }
+    .baseurl-bar .label {
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 0.06em; text-transform: uppercase; color: var(--tx-2);
+    }
+    .baseurl-bar code {
+      background: var(--code-surface); padding: 2px 8px;
+      border: 1px solid var(--code-border); border-radius: 0.375rem;
+      font-size: 12px; color: var(--code-text);
+      box-shadow: var(--code-inset);
+      overflow-wrap: anywhere;
+    }
+    .baseurl-bar .hint { margin-left: auto; font-size: 11.5px; color: var(--tx-2); }
+
+    /* ---------- 章节 ---------- */
+    section.group { margin-bottom: 36px; }
+    .group-head {
+      display: flex; align-items: baseline; gap: 8px;
+      padding-bottom: 6px; margin-bottom: 4px;
+      border-bottom: 1px solid var(--bd);
+    }
+    .group-head h2 { margin: 0; font-size: 1.125rem; font-weight: 600; line-height: 1.45; color: var(--tx); }
+    .group-head .group-sub { font-size: 12px; color: var(--tx-2); }
+    .group-intro { margin: 8px 0 8px; font-size: 12.5px; line-height: 1.7; color: var(--tx-2); }
+
+    /* ---------- 子分组 ---------- */
+    section.sub { margin-top: 20px; }
+    .sub-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+    .sub-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--tx); }
+    .sub-head .sub-meta { font-size: 11px; color: var(--tx-2); font-weight: 500; }
+    .sub-intro { margin: 0 0 4px; font-size: 12px; line-height: 1.65; color: var(--tx-2); }
+
+    /* ---------- Endpoint：左 method+path+代码 / 右仅说明 ---------- */
+    article.ep { padding: 20px 0; border-bottom: 1px solid var(--bd); }
+    article.ep.is-last { border-bottom: 0; }
+    .ep-grid { display: grid; gap: 20px; align-items: start; }
+    .ep-codes {
+      background: var(--docs-code-col-bg);
+      border: 1px solid var(--bd);
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .ep-desc {
+      background: var(--docs-prose-bg);
+      border: 1px solid var(--bd);
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    @media (min-width: 1024px) {
+      .ep-grid.has-code {
+        grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+      }
+    }
+    .ep-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+    }
+    .ep-summary { margin: 0; font-size: 13px; line-height: 1.6; color: var(--tx); font-weight: 500; }
+    .ep-note {
+      margin: 8px 0 0; font-size: 12.5px; line-height: 1.75;
+      color: var(--tx-2); white-space: pre-line;
+    }
+    .ep-desc .ep-note { margin: 0; }
+
+    /* ---------- 方法 badge ---------- */
+    .method {
+      display: inline-block; min-width: 58px; text-align: center;
+      padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    .method.GET    { background: var(--m-get-bg);    color: var(--m-get-tx); }
+    .method.POST   { background: var(--m-post-bg);   color: var(--m-post-tx); }
+    .method.PUT    { background: var(--m-put-bg);    color: var(--m-put-tx); }
+    .method.DELETE { background: var(--m-delete-bg); color: var(--m-delete-tx); }
+    .method.PATCH  { background: var(--m-patch-bg);  color: var(--m-patch-tx); }
+    code.path {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 13px; color: var(--tx); word-break: break-all;
+    }
+
+    /* ---------- 代码块 ---------- */
+    .cb-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2px 4px; min-height: 16px;
+    }
+    .cb-label {
+      font-size: 10px; font-weight: 600;
+      letter-spacing: 0.06em; text-transform: uppercase; color: var(--tx-2);
+    }
+    .cb pre {
+      margin: 0;
+      padding: 12px 16px;
+      background: var(--code-surface);
+      border: 1px solid var(--code-border);
+      border-radius: 0.75rem;
+      color: var(--code-text);
+      box-shadow: var(--code-inset);
+      font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+      font-size: 12px; line-height: 1.6;
+      overflow-x: auto; white-space: pre;
+    }
+
+    /* ---------- Quickstart：左合并代码 / 右 Step 文字 ---------- */
+    .quickstart { margin: 12px 0 24px; }
+    .qs-head {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    }
+    .qs-head h3 { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--tx); }
+    .qs-tag {
+      font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; color: var(--primary);
+    }
+    .qs-intro { margin: 0 0 14px; font-size: 12.5px; line-height: 1.7; color: var(--tx-2); }
+    .qs-layout { display: grid; gap: 18px; align-items: start; }
+    .qs-code-col {
+      background: var(--docs-code-col-bg);
+      border: 1px solid var(--bd);
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .qs-desc-col {
+      background: var(--docs-prose-bg);
+      border: 1px solid var(--bd);
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    @media (min-width: 1024px) {
+      .qs-layout {
+        grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+      }
+      .qs-code-col { order: 1; }
+      .qs-desc-col { order: 2; }
+    }
+    @media (max-width: 1023px) {
+      .qs-desc-col { order: 1; }
+      .qs-code-col { order: 2; }
+    }
+    .qs-desc-step { margin-bottom: 14px; }
+    .qs-desc-step:last-child { margin-bottom: 0; }
+    .qs-desc-step h4 {
+      margin: 0 0 4px;
+      font-size: 12.5px; font-weight: 600; color: var(--tx);
+    }
+    .qs-desc-step p {
+      margin: 0; font-size: 12.5px; line-height: 1.75;
+      color: var(--tx-2); white-space: pre-line;
+    }
+
+    /* ---------- 语法高亮 token ---------- */
+    .api-syntax .tk-cmt { color: var(--tk-cmt); font-style: italic; }
+    .api-syntax .tk-str { color: var(--tk-str); }
+    .api-syntax .tk-kw  { color: var(--tk-kw); }
+    .api-syntax .tk-num { color: var(--tk-num); }
+
+    /* ---------- 滚动条 ---------- */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--bd); }
+
+    /* ---------- 响应式 ---------- */
+    @media (max-width: 880px) {
+      .layout { grid-template-columns: 1fr; }
+      .outline {
+        position: static; border-right: 0; max-height: none;
+        border-bottom: 1px solid var(--bd);
+      }
+      header.page { flex-wrap: wrap; }
+      header.page .meta { margin-left: 0; }
+      main.content { padding: 18px 16px 60px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="page">
+    <h1>zealman镜像API接口说明（v8.8）</h1>
+    <span class="sub">镜像qq群1046279436</span>
+    <span class="meta">生成于 2026-07-30T17:44:47.394Z</span>
+  </header>
+  <div class="layout">
+    <nav class="outline"><ul><li class="group-item">
+  <a href="#workflow" class="group-link">1. 工作流 API</a>
+  <ul><li><a class="qs-link" href="#workflow-quickstart">快速上手</a></li><li><a href="#workflow-run">执行与查询</a></li><li><a href="#workflow-upload">文件上传</a></li><li><a href="#workflow-config">工作流配置（CRUD）</a></li></ul>
+</li><li class="group-item">
+  <a href="#panel" class="group-link">2. 控制面板 API</a>
+  <ul><li><a class="qs-link" href="#panel-quickstart">快速上手</a></li><li><a href="#panel-status">面板状态 / 硬件</a></li><li><a href="#panel-comfyui">ComfyUI 启停 / 状态</a></li><li><a href="#panel-assets">我的资产 / 输出管理</a></li></ul>
+</li><li class="group-item">
+  <a href="#concurrent" class="group-link">3. 并发接口 API</a>
+  <ul><li><a class="qs-link" href="#concurrent-quickstart">快速上手</a></li><li><a href="#concurrent-instance">AutoDL 实例管理</a></li><li><a href="#concurrent-mirror">镜像机 ComfyUI 控制</a></li><li><a href="#concurrent-input-assets">输入素材管理</a></li><li><a href="#concurrent-tasks">任务调度</a></li><li><a href="#concurrent-cluster-assets">集群资产</a></li></ul>
+</li></ul></nav>
+    <main class="content">
+      <div class="baseurl-bar">
+        <span class="label">BASE URL</span>
+        <code>https://uu11197-78328d7ad669.bjb2.seetacloud.com:8443</code>
+        <span class="hint">文件参数支持公网 URL · base64 · 上传后填 name</span>
+      </div>
+      <section id="workflow" class="group">
+  <div class="group-head">
+    <h2>1. 工作流 API</h2>
+    <span class="group-sub">直接调用生成内容</span>
+  </div>
+  <p class="group-intro">把面板里&quot;导入工作流&quot;保存好的一张张卡片，当成&quot;AI 生成接口&quot;远程调用。三步走：① 提交任务拿 prompt_id；② 轮询查结果；③ 拿到图片/视频/音频的下载 URL。prompt_id 仅存在于 ComfyUI 内存 history 中，重启后失效，请在任务完成时立即保存 results 里的文件 URL，勿依赖隔日再查。下面这段代码可以直接复制到浏览器控制台或 Node 里跑通。</p>
+  <section id="workflow-quickstart" class="quickstart">
+  <div class="qs-head">
+    <h3>完整示例 · 跑一次工作流并拿到生成结果</h3>
+    <span class="qs-tag">QUICKSTART</span>
+  </div>
+  <p class="qs-intro">最常用的接入方式：直接向当前面板地址的 /api/workflow/generate 提交任务，拿到 prompt_id 后再轮询 /api/workflow/result。任务结束后请立刻保存 results 中的 URL；prompt_id 不能作为隔日恢复的凭证。示例里使用完整 URL，复制后更容易看懂。</p>
+  <div class="qs-layout">
+    <div class="qs-code-col"><div class="cb">
+  <div class="cb-head"><span class="cb-label">完整调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> response = <span class="tk-kw">await</span> fetch(<span class="tk-str">'https://uu11197-78328d7ad669.bjb2.seetacloud.com:8443/api/workflow/generate'</span>, {
+  method: <span class="tk-str">'POST'</span>,
+  headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({
+    workflow_id: <span class="tk-str">'A01-文生图-Qwen2512高清放大'</span>,
+    input_values: {
+      <span class="tk-str">'3:seed'</span>: <span class="tk-num">325183347</span>,
+      <span class="tk-str">'187:text'</span>: <span class="tk-str">'亚洲女生，真人\nA photo-realistic portrait of a young Asian woman with natural skin texture, cinematic lighting'</span>,
+      <span class="tk-str">'437:text'</span>: <span class="tk-str">'低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲'</span>,
+      <span class="tk-str">'515:value'</span>: <span class="tk-num">1280</span>,
+      <span class="tk-str">'516:value'</span>: <span class="tk-num">720</span>
+    }
+  })
+});
+<span class="tk-kw">const</span> data = <span class="tk-kw">await</span> response.json();
+
+<span class="tk-cmt">// data.prompt_id — 推荐轮询 https://uu11197-78328d7ad669.bjb2.seetacloud.com:8443/api/workflow/result?prompt_id=... 获取简化结果</span>
+<span class="tk-cmt">// 兼容旧方式：也可轮询 https://uu11197-78328d7ad669.bjb2.seetacloud.com:8443/api/comfy/proxy/history?prompt_id=...</span>
+console.log(data);</pre>
+</div></div>
+    <div class="qs-desc-col"><div class="qs-desc-step">
+  <h4>Step 1 · 提交任务并获取 prompt_id</h4>
+  <p>workflow_id 填「API 生成」页里已经导入保存的工作流名称。input_values 里直接写这个工作流需要改的参数，key 的格式是「节点ID:字段名」。请求成功后返回 data.prompt_id，之后用它查询结果。</p>
+</div></div>
+  </div>
+</section>
+  <section id="workflow-run" class="sub">
+  <div class="sub-head">
+    <h3>执行与查询</h3>
+    <span class="sub-meta">5 个接口</span>
+  </div>
+  <p class="sub-intro">完整的调用链：① POST /api/workflow/generate 提交并拿到 prompt_id；② 每隔 1～3 秒 GET /api/workflow/result?prompt_id=… 直到 pending=false；③ 在响应里取 results 数组拿到所有产出文件的 URL。
+
+【prompt_id 有效期】prompt_id 对应 ComfyUI 进程内存中的 history，不会持久化到数据库或磁盘索引。ComfyUI 一旦重启（隔日开机、手动重启、崩溃恢复等），history 清空，旧 prompt_id 将无法再查到结果。单机最多保留约 10000 条历史记录，更早的会被自动挤出。接入建议：① pending=false 时立即把 results 里的 /output/... URL 下载或落库到你方系统；② 不要只保存 prompt_id 指望隔天轮询；③ 若长时间得到 pending=true 且 results=[]，多半是记录已失效（不是任务仍在跑）。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/workflow/generate</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"workflow_id"</span>: <span class="tk-str">"example-workflow.json"</span>,
+  <span class="tk-str">"input_values"</span>: {
+    <span class="tk-str">"12:image"</span>: <span class="tk-str">"https://example.com/in.png"</span>,
+    <span class="tk-str">"21:audio"</span>: <span class="tk-str">"https://example.com/in.mp3"</span>,
+    <span class="tk-str">"33:text"</span>: <span class="tk-str">"一只在沙滩上奔跑的小狗，电影感"</span>
+  },
+  <span class="tk-str">"client_id"</span>: <span class="tk-str">"my-app-001"</span>
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt">// fetch 写法（浏览器 / Node 18+）</span>
+<span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/workflow/generate'</span>, {
+  method: <span class="tk-str">'POST'</span>,
+  headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({
+    workflow_id: <span class="tk-str">'example-workflow.json'</span>,
+    input_values: {
+      <span class="tk-str">'12:image'</span>: <span class="tk-str">'https://example.com/in.png'</span>,
+      <span class="tk-str">'33:text'</span>: <span class="tk-str">'一只在沙滩上奔跑的小狗'</span>
+    }
+  })
+});
+<span class="tk-kw">const</span> data = <span class="tk-kw">await</span> r.json();
+<span class="tk-kw">if</span> (!data.success) <span class="tk-kw">throw</span> <span class="tk-kw">new</span> Error(data.error);
+<span class="tk-kw">const</span> promptId = data.prompt_id;
+console.log(<span class="tk-str">'已提交，prompt_id ='</span>, promptId);</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"prompt_id"</span>: <span class="tk-str">"d1e7a2b8-4a01-…"</span>,
+  <span class="tk-str">"client_id"</span>: <span class="tk-str">"my-app-001"</span>,
+  <span class="tk-str">"number"</span>: <span class="tk-num">1</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">提交生成任务，立即返回 prompt_id
+
+请求体中的 workflow_id 指定要跑哪条已保存的工作流；接口只负责入队，HTTP 响应里立刻给出 prompt_id，不等待画布跑完。workflow_id 须为已在「API 生成」页导入并保存到面板的工作流。input_values 的 key 为「节点ID:字段名」，例如 &quot;12:image&quot;。文件类参数：① 公网 https URL；② data:*;base64（默认上限约 50MB）；③ 先走上传接口拿到 name 再填入。client_id 可选，用于 WebSocket 进度；不传也可正常使用。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/workflow/result?prompt_id={prompt_id}</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt">// 轮询直到完成</span>
+<span class="tk-kw">async</span> <span class="tk-kw">function</span> waitForResult(promptId) {
+  <span class="tk-kw">while</span> (<span class="tk-kw">true</span>) {
+    <span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/workflow/result?prompt_id='</span> + promptId);
+    <span class="tk-kw">const</span> data = <span class="tk-kw">await</span> r.json();
+    <span class="tk-kw">if</span> (data.pending === <span class="tk-kw">false</span>) <span class="tk-kw">return</span> data.results;
+    <span class="tk-kw">await</span> <span class="tk-kw">new</span> Promise(res =&gt; setTimeout(res, <span class="tk-num">1500</span>));
+  }
+}
+<span class="tk-kw">const</span> results = <span class="tk-kw">await</span> waitForResult(promptId);
+results.forEach(r =&gt; console.log(r.type, <span class="tk-str">'→'</span>, BASE_URL + r.url));</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"pending"</span>: <span class="tk-kw">false</span>,
+  <span class="tk-str">"prompt_id"</span>: <span class="tk-str">"d1e7a2b8-…"</span>,
+  <span class="tk-str">"results"</span>: [
+    {
+      <span class="tk-str">"type"</span>: <span class="tk-str">"image"</span>,
+      <span class="tk-str">"url"</span>: <span class="tk-str">"/output/2025/zealman_00001.png"</span>,
+      <span class="tk-str">"filename"</span>: <span class="tk-str">"zealman_00001.png"</span>
+    },
+    {
+      <span class="tk-str">"type"</span>: <span class="tk-str">"video"</span>,
+      <span class="tk-str">"url"</span>: <span class="tk-str">"/output/2025/zealman_00001.mp4"</span>,
+      <span class="tk-str">"filename"</span>: <span class="tk-str">"zealman_00001.mp4"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">推荐：根据 prompt_id 拿到简化结果（图片/视频/音频的可访问 URL）
+
+响应中 pending=true 表示还在跑，请继续轮询；pending=false 即任务结束。results 是数组，按节点输出顺序排列；每个元素包含 type（image/video/audio/text）和 url（output 文件直接是 /output/...，可直接显示或下载）。建议每 1～3 秒轮询一次，避免给后端打满。
+
+注意：当 history 中已无该 prompt_id（例如 ComfyUI 重启后），接口也会返回 pending=true、results=[]，这与「任务仍在生成」无法区分。隔日开机后再用旧 prompt_id 轮询通常查不到结果；请在首次 pending=false 时保存 results。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/proxy/history?prompt_id={prompt_id}</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax">curl <span class="tk-str">"$BASE_URL/api/comfy/proxy/history?prompt_id=$PROMPT_ID"</span></pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"d1e7a2b8-…"</span>: {
+    <span class="tk-str">"prompt"</span>: [
+      <span class="tk-str">"…"</span>
+    ],
+    <span class="tk-str">"outputs"</span>: {
+      <span class="tk-str">"9"</span>: {
+        <span class="tk-str">"images"</span>: [
+          {
+            <span class="tk-str">"filename"</span>: <span class="tk-str">"zealman_00001.png"</span>,
+            <span class="tk-str">"subfolder"</span>: <span class="tk-str">""</span>,
+            <span class="tk-str">"type"</span>: <span class="tk-str">"output"</span>
+          }
+        ]
+      }
+    },
+    <span class="tk-str">"status"</span>: {
+      <span class="tk-str">"status_str"</span>: <span class="tk-str">"success"</span>,
+      <span class="tk-str">"completed"</span>: <span class="tk-kw">true</span>
+    }
+  }
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">获取 ComfyUI 原始 history（节点级输出明细，调试用）
+
+比 /api/workflow/result 更&quot;原始&quot;，直接转发自 ComfyUI 自身的 history 接口，包含每个节点的输出与执行错误信息。普通业务调用建议优先用 /api/workflow/result；只有需要排查&quot;哪一个节点报错&quot;时才用这里。history 同样仅存于 ComfyUI 内存，重启后旧 prompt_id 返回空对象。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/output/{subfolder}/{filename}</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt">// 显示生成的图片</span>
+document.getElementById(<span class="tk-str">'preview'</span>).src = BASE_URL + <span class="tk-str">'/output/2025/zealman_00001.png'</span>;
+
+<span class="tk-cmt">// 直接下载</span>
+<span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/output/2025/zealman_00001.png'</span>);
+<span class="tk-kw">const</span> blob = <span class="tk-kw">await</span> r.blob();</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">直接读取 ComfyUI output 目录里的生成结果（图片/视频/音频）
+
+由面板用 express.static 直接静态托管，可在 &lt;img&gt;/&lt;video&gt; 标签 src 里直接使用。/api/workflow/result 返回的 url 字段已经是这种相对路径，前面拼上 BASE_URL 就能下载或在浏览器里打开。</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/view?filename=...&amp;type=input&amp;subfolder=...</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt">// 预览刚上传的图片</span>
+<span class="tk-kw">const</span> url = BASE_URL + <span class="tk-str">'/api/comfy/view?filename='</span> + encodeURIComponent(name) + <span class="tk-str">'&amp;type=input'</span>;
+img.src = url;</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">读取 ComfyUI input/temp 目录里的文件（type=input/temp/output）
+
+主要用于读取上传后的 input 素材或 temp 中间产物。output 文件优先用 /output/... 直链。type 默认 input；subfolder 可选。</p></div>
+  </div>
+</article>
+</section>
+<section id="workflow-upload" class="sub">
+  <div class="sub-head">
+    <h3>文件上传</h3>
+    <span class="sub-meta">2 个接口</span>
+  </div>
+  <p class="sub-intro">当 input_values 里要传图片/视频/音频，但又不方便用公网 URL 或 base64 时，先把文件上传到 ComfyUI input 目录，拿到返回的 name，再把这个 name 填回 input_values 里对应的字段。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/comfy/upload/file</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">multipart/form-data
+  file:      &lt;File&gt;      <span class="tk-cmt">// 必填，二进制文件</span>
+  overwrite: <span class="tk-kw">true</span> | <span class="tk-kw">false</span>  <span class="tk-cmt">// 可选，默认 false</span>
+
+（兼容字段名：file / image / video / audio）</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt"># curl 上传本地文件</span>
+curl -X POST <span class="tk-str">"$BASE_URL/api/comfy/upload/file"</span> \
+  -F <span class="tk-str">"file=@/path/to/local.png"</span> \
+  -F <span class="tk-str">"overwrite=true"</span>
+
+<span class="tk-cmt"># 浏览器 fetch + FormData</span>
+<span class="tk-kw">const</span> fd = <span class="tk-kw">new</span> FormData();
+fd.append(<span class="tk-str">'file'</span>, fileInput.files[<span class="tk-num">0</span>]);
+fd.append(<span class="tk-str">'overwrite'</span>, <span class="tk-str">'true'</span>);
+<span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/comfy/upload/file'</span>, { method: <span class="tk-str">'POST'</span>, body: fd });
+<span class="tk-kw">const</span> { name } = <span class="tk-kw">await</span> r.json();   <span class="tk-cmt">// 把 name 填到 input_values 里</span>
+inputValues[<span class="tk-str">'12:image'</span>] = name;</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"name"</span>: <span class="tk-str">"local.png"</span>,
+  <span class="tk-str">"subfolder"</span>: <span class="tk-str">""</span>,
+  <span class="tk-str">"type"</span>: <span class="tk-str">"input"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">推荐：通用文件上传，图片/视频/音频/任意文件都可以
+
+Content-Type 必须是 multipart/form-data。字段名兼容 file / image / video / audio 任意一个。overwrite=true 可覆盖同名文件。返回的 name 字段就是给 input_values 用的值。</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/comfy/upload/image</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">multipart/form-data
+  image:     &lt;File&gt;
+  overwrite: <span class="tk-kw">true</span> | <span class="tk-kw">false</span></pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">旧兼容接口：仅接受 image 字段（仅图片）
+
+能用 /api/comfy/upload/file 就用它，本接口仅为旧客户端保留。</p></div>
+  </div>
+</article>
+</section>
+<section id="workflow-config" class="sub">
+  <div class="sub-head">
+    <h3>工作流配置（CRUD）</h3>
+    <span class="sub-meta">5 个接口</span>
+  </div>
+  <p class="sub-intro">管理&quot;已保存的 API 工作流&quot;——也就是 API 生成页里那一张张卡片。普通业务调用只读 list/config 即可；save/rename/delete 通常由 API 生成页内部使用。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/workflow/list</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/workflow/list'</span>);
+<span class="tk-kw">const</span> { workflows } = <span class="tk-kw">await</span> r.json();
+workflows.forEach(w =&gt; console.log(w.id, <span class="tk-str">'运行'</span>, w.run_count, <span class="tk-str">'次'</span>));</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"workflows"</span>: [
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"example-workflow"</span>,
+      <span class="tk-str">"name"</span>: <span class="tk-str">"example-workflow.json"</span>,
+      <span class="tk-str">"mtime"</span>: <span class="tk-str">"2025-11-12T08:00:00.000Z"</span>,
+      <span class="tk-str">"run_count"</span>: <span class="tk-num">3</span>,
+      <span class="tk-str">"last_run_at"</span>: <span class="tk-str">"2025-11-12T08:30:00.000Z"</span>,
+      <span class="tk-str">"last_prompt_id"</span>: <span class="tk-str">"d1e7a2b8-…"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">列出所有已保存的 API 工作流（卡片列表）
+
+按修改时间倒序返回，包含运行次数、最后一次 prompt_id 等用量统计。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/workflow/config/{id}</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/workflow/config/example-workflow'</span>);
+<span class="tk-kw">const</span> { workflow_template, api_config } = <span class="tk-kw">await</span> r.json();</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"workflow_template"</span>: {
+    <span class="tk-str">"1"</span>: {
+      <span class="tk-str">"class_type"</span>: <span class="tk-str">"LoadImage"</span>,
+      <span class="tk-str">"inputs"</span>: {
+        <span class="tk-str">"image"</span>: <span class="tk-str">"input.png"</span>
+      }
+    }
+  },
+  <span class="tk-str">"api_config"</span>: {
+    <span class="tk-str">"enabledParams"</span>: {
+      <span class="tk-str">"1:image"</span>: <span class="tk-kw">true</span>
+    },
+    <span class="tk-str">"formValues"</span>: {},
+    <span class="tk-str">"customLabels"</span>: {
+      <span class="tk-str">"1:image"</span>: <span class="tk-str">"上传图片"</span>
+    }
+  }
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">读取单个 API 工作流配置 + 原始 workflow_template
+
+返回的 workflow_template 是完整 ComfyUI API 格式 prompt（节点 ID → 节点定义），可以直接代理给 ComfyUI；api_config 包含 enabledParams/formValues/customLabels，用于在 UI 上还原参数面板。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/workflow/save</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"workflow_id"</span>: <span class="tk-str">"example-workflow.json"</span>,
+  <span class="tk-str">"workflow_template"</span>: {
+    <span class="tk-str">"1"</span>: {
+      <span class="tk-str">"class_type"</span>: <span class="tk-str">"LoadImage"</span>,
+      <span class="tk-str">"inputs"</span>: {
+        <span class="tk-str">"image"</span>: <span class="tk-str">"input.png"</span>
+      }
+    }
+  },
+  <span class="tk-str">"api_config"</span>: {
+    <span class="tk-str">"enabledParams"</span>: {
+      <span class="tk-str">"1:image"</span>: <span class="tk-kw">true</span>
+    },
+    <span class="tk-str">"formValues"</span>: {},
+    <span class="tk-str">"customLabels"</span>: {
+      <span class="tk-str">"1:image"</span>: <span class="tk-str">"上传图片"</span>
+    }
+  }
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">保存或覆盖一个 API 工作流（导入工作流、参数编辑页保存均走此接口）
+
+若 workflow_id 已存在则覆盖；不存在则新建。api_config 可选，传了会作为 _api_config 字段一起写入 .json 文件，供后续打开参数编辑页恢复表单。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/workflow/rename</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"oldId"</span>: <span class="tk-str">"example-workflow.json"</span>,
+  <span class="tk-str">"newId"</span>: <span class="tk-str">"new-name.json"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">重命名一个 API 工作流（同时迁移用量统计）
+
+若 newId 已存在会返回 400。</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/workflow/{id}</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/workflow/example-workflow'</span>, { method: <span class="tk-str">'DELETE'</span> });</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">删除一个 API 工作流配置（同时清掉用量统计）</p></div>
+  </div>
+</article>
+</section>
+</section>
+<section id="panel" class="group">
+  <div class="group-head">
+    <h2>2. 控制面板 API</h2>
+    <span class="group-sub">面板自身的运维与资产接口</span>
+  </div>
+  <p class="group-intro">面板自身的运维接口：硬件信息、ComfyUI 启停、资产管理等。面板默认监听 6008 端口，AutoDL 上可通过&quot;自定义服务&quot;暴露到公网。</p>
+  <section id="panel-quickstart" class="quickstart">
+  <div class="qs-head">
+    <h3>完整示例 · 自检 + 自动启动 ComfyUI</h3>
+    <span class="qs-tag">QUICKSTART</span>
+  </div>
+  <p class="qs-intro">从面板在线自检到 ComfyUI 就绪。左侧为完整脚本；右侧 Step 对应每一段在做什么。</p>
+  <div class="qs-layout">
+    <div class="qs-code-col"><div class="cb">
+  <div class="cb-head"><span class="cb-label">完整调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> BASE_URL = <span class="tk-str">"https://uu11197-78328d7ad669.bjb2.seetacloud.com:8443"</span>;
+
+<span class="tk-kw">const</span> h = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/health'</span>)
+  .then(r =&gt; r.json());
+<span class="tk-kw">if</span> (h.status !== <span class="tk-str">'ok'</span>) <span class="tk-kw">throw</span> <span class="tk-kw">new</span> Error(<span class="tk-str">'面板未启动'</span>);
+
+<span class="tk-kw">const</span> gpu = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/gpu/info'</span>)
+  .then(r =&gt; r.json());
+<span class="tk-kw">if</span> (!gpu.hasGPU) <span class="tk-kw">throw</span> <span class="tk-kw">new</span> Error(<span class="tk-str">'当前是无卡模式'</span>);
+console.log(<span class="tk-str">'GPU：'</span>, gpu.gpus?.[<span class="tk-num">0</span>]?.name);
+
+<span class="tk-kw">let</span> st = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/comfy/status'</span>)
+  .then(r =&gt; r.json());
+
+<span class="tk-kw">if</span> (!st.running) {
+  <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/comfy/start'</span>, {
+    method: <span class="tk-str">'POST'</span>,
+    headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+    body: JSON.stringify({
+      useProxy: <span class="tk-kw">true</span>,
+      proxyType: <span class="tk-str">'network_turbo'</span>
+    })
+  });
+  <span class="tk-kw">for</span> (<span class="tk-kw">let</span> i = <span class="tk-num">0</span>; i &lt; <span class="tk-num">20</span>; i++) {
+    <span class="tk-kw">await</span> <span class="tk-kw">new</span> Promise(r =&gt; setTimeout(r, <span class="tk-num">3000</span>));
+    st = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/comfy/status'</span>)
+      .then(r =&gt; r.json());
+    <span class="tk-kw">if</span> (st.running) <span class="tk-kw">break</span>;
+  }
+  <span class="tk-kw">if</span> (!st.running) <span class="tk-kw">throw</span> <span class="tk-kw">new</span> Error(<span class="tk-str">'ComfyUI 启动超时'</span>);
+}
+console.log(<span class="tk-str">'已就绪 → 端口'</span>, st.port);</pre>
+</div></div>
+    <div class="qs-desc-col"><div class="qs-desc-step">
+  <h4>Step 1 · 定义面板地址</h4>
+  <p>BASE_URL 即当前控制面板地址（与本文档页的 origin 一致）。示例中会替换为实际地址。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 2 · 健康检查（面板存活）</h4>
+  <p>/api/health 是最轻量的存活探针。返回 { status: &quot;ok&quot;, uptime: 秒数 } 即视为面板可用，常用作监控脚本的就绪探针。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 3 · GPU 与无卡模式判断</h4>
+  <p>AutoDL 的「无卡模式」也能开机但跑不了生成。返回里 hasGPU=false 就是无卡模式，需到 AutoDL 控制台正常开机；hasGPU=true 时可在 gpus[] 里看到显卡型号和显存大小。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 4 · 查询 ComfyUI 状态</h4>
+  <p>返回 { running, starting, reason, port: 6006, ... }。running=true 直接进入生成流程；running=false 时若 starting=true 说明面板已经在自启动，等几秒再轮询即可；都为 false 才需要主动调用启动接口。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 5 · 启动并等待 ComfyUI 就绪</h4>
+  <p>useProxy + proxyType=&quot;network_turbo&quot; 会在启动前 source /etc/network_turbo，解决拉模型/插件依赖的网络问题；普通环境可去掉这两个参数。
+
+启动接口立即返回，需要轮询 status 直到 running=true，建议每 3 秒查一次、最多等 60 秒。</p>
+</div></div>
+  </div>
+</section>
+  <section id="panel-status" class="sub">
+  <div class="sub-head">
+    <h3>面板状态 / 硬件</h3>
+    <span class="sub-meta">6 个接口</span>
+  </div>
+  <p class="sub-intro">只读接口，全部 GET，可直接放进监控脚本里循环拉取。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/health</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax">curl -s <span class="tk-str">"$BASE_URL/api/health"</span></pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"status"</span>: <span class="tk-str">"ok"</span>,
+  <span class="tk-str">"timestamp"</span>: <span class="tk-str">"2026-05-12T03:00:00.000Z"</span>,
+  <span class="tk-str">"uptime"</span>: <span class="tk-num">3600.12</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">面板服务健康检查（最简单的存活探针）
+
+常用作监控/CI 的就绪探针；返回 200 即视为面板可用。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/external-url-6008</code>
+      </div>
+  <p class="ep-note">当前面板（6008 端口）的 AutoDL 外网地址
+
+在 AutoDL 容器内调用，返回类似 https://u123-app.openbayes.net 的地址，可分发给外部使用。当前面板不在 AutoDL 环境时会返回 success=false。</p>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/gpu/info</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax">curl -s <span class="tk-str">"$BASE_URL/api/gpu/info"</span></pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"hasGPU"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"gpus"</span>: [
+    {
+      <span class="tk-str">"name"</span>: <span class="tk-str">"RTX 4090"</span>,
+      <span class="tk-str">"memory_total_mb"</span>: <span class="tk-num">24564</span>,
+      <span class="tk-str">"memory_used_mb"</span>: <span class="tk-num">1024</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">GPU 型号、显存占用、是否无卡模式
+
+无卡模式（hasGPU=false）下，跑生成会立刻失败；建议在调用 generate 前先查这里。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/hardware/info</code>
+      </div>
+  <p class="ep-note">CPU / 内存 / 磁盘 等综合硬件信息</p>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/disk/size</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"system"</span>: {
+    <span class="tk-str">"total_gb"</span>: <span class="tk-num">50</span>,
+    <span class="tk-str">"used_gb"</span>: <span class="tk-num">30</span>,
+    <span class="tk-str">"free_gb"</span>: <span class="tk-num">20</span>
+  },
+  <span class="tk-str">"data"</span>: {
+    <span class="tk-str">"total_gb"</span>: <span class="tk-num">200</span>,
+    <span class="tk-str">"used_gb"</span>: <span class="tk-num">80</span>,
+    <span class="tk-str">"free_gb"</span>: <span class="tk-num">120</span>
+  }
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">系统盘 / 数据盘 总容量与剩余空间</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/disk-usage</code>
+      </div>
+  <p class="ep-note">磁盘明细：模型 / 输出 / 缓存 等分目录占用</p>
+</article>
+</section>
+<section id="panel-comfyui" class="sub">
+  <div class="sub-head">
+    <h3>ComfyUI 启停 / 状态</h3>
+    <span class="sub-meta">9 个接口</span>
+  </div>
+  <p class="sub-intro">ComfyUI（监听 6006）由面板托管，启停、查询、日志均走这里。调用工作流前需先确认 status.running=true。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/comfy/start</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"useProxy"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"proxyType"</span>: <span class="tk-str">"network_turbo"</span>,
+  <span class="tk-str">"disableCopilot"</span>: <span class="tk-kw">true</span>
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax">curl -X POST <span class="tk-str">"$BASE_URL/api/comfy/start"</span> \
+  -H <span class="tk-str">"Content-Type: application/json"</span> \
+  -d <span class="tk-str">'{"useProxy":true,"proxyType":"network_turbo"}'</span></pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"code"</span>: <span class="tk-num">0</span>,
+  <span class="tk-str">"log"</span>: <span class="tk-str">"ComfyUI 启动脚本已触发\\n"</span>,
+  <span class="tk-str">"alreadyRunning"</span>: <span class="tk-kw">false</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">启动 ComfyUI（已运行会直接返回 alreadyRunning=true）
+
+useProxy=true 时，proxyType 选 &quot;network_turbo&quot;（学术加速，推荐）或 &quot;none&quot;（不使用代理）。disableCopilot=true 可关闭 ComfyUI-Copilot 插件提速。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/comfy/stop</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">停止 ComfyUI（pkill 当前 ComfyUI 进程）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/status</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"running"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"starting"</span>: <span class="tk-kw">false</span>,
+  <span class="tk-str">"reason"</span>: <span class="tk-str">"ready"</span>,
+  <span class="tk-str">"port"</span>: <span class="tk-num">6006</span>,
+  <span class="tk-str">"listen"</span>: <span class="tk-str">"127.0.0.1"</span>,
+  <span class="tk-str">"url"</span>: <span class="tk-str">"http://127.0.0.1:6006"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">当前 ComfyUI 是否运行 + 启动阶段
+
+推荐直接用两个布尔字段判断三阶段：
+  • running=true               → 启动成功，可直接 generate
+  • running=false, starting=true → 启动中（进程刚起 HTTP 还未就绪、或面板自启动窗口期）
+  • running=false, starting=false → 未启动
+
+reason 字段是调试用的细分原因，可选值：
+  • &quot;ready&quot;             ：进程在且 ComfyUI /system_stats 已就绪（== running:true）
+  • &quot;starting&quot;          ：进程已起但 HTTP 未就绪，或面板正在自启动等待期
+  • &quot;process_not_found&quot; ：进程不存在，且没有任何启动流程在跑
+
+建议 generate 前每 2~5 秒轮询一次直到 running=true。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/queue-status</code>
+      </div>
+  <p class="ep-note">ComfyUI 队列是否繁忙（busy=true 表示有任务正在跑或排队）</p>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/version</code>
+      </div>
+  <p class="ep-note">当前 ComfyUI 版本号
+
+由面板从 ComfyUI 安装目录里的版本文件读取，不依赖 ComfyUI 进程，没启动也能查。</p>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/external-url</code>
+      </div>
+  <p class="ep-note">ComfyUI 6006 端口的 AutoDL 外网地址（暴露原生 ComfyUI 网页）</p>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/check-port/{port}</code>
+      </div>
+  <p class="ep-note">探测某端口是否被占用（一般查 6006 / 6008）</p>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/comfy/kill-port/{port}</code>
+      </div>
+  <p class="ep-note">强杀占用该端口的进程（解决&quot;端口已占用&quot;启动失败）</p>
+</article>
+<article class="ep is-last">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/comfy/logs</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt">// 浏览器：实时打印日志</span>
+<span class="tk-kw">const</span> es = <span class="tk-kw">new</span> EventSource(BASE_URL + <span class="tk-str">'/api/comfy/logs'</span>);
+es.onmessage = e =&gt; console.log(<span class="tk-str">'[Comfy]'</span>, e.data);
+es.onerror = () =&gt; es.close();</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">SSE 流式获取 ComfyUI 实时日志
+
+返回 text/event-stream，浏览器用 EventSource 持续接收。每条 message 是一行日志文本；适合做&quot;启动调试控制台&quot;。</p></div>
+  </div>
+</article>
+</section>
+<section id="panel-assets" class="sub">
+  <div class="sub-head">
+    <h3>我的资产 / 输出管理</h3>
+    <span class="sub-meta">12 个接口</span>
+  </div>
+  <p class="sub-intro">管理 ComfyUI output 目录的产出（图片/视频/音频）和 input 目录的素材。资产文件以相对路径返回，可直接拼上 BASE_URL + /output/... 显示或下载。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/images</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/images'</span>);
+<span class="tk-kw">const</span> list = <span class="tk-kw">await</span> r.json();
+list.forEach(item =&gt; console.log(item.relativePath));</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">列出 output 目录的所有资产（图片 + 视频 + 音频）
+
+递归扫描 OUTPUT_DIR，返回相对路径、大小、修改时间。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/input-assets</code>
+      </div>
+  <p class="ep-note">列出 ComfyUI input 目录的素材（已上传给工作流当输入用的文件）</p>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/images/delete</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"paths"</span>: [
+    <span class="tk-str">"2025/zealman_00001.png"</span>,
+    <span class="tk-str">"2025/zealman_00002.png"</span>
+  ]
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/images/delete'</span>, {
+  method: <span class="tk-str">'DELETE'</span>,
+  headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({ paths: [<span class="tk-str">'2025/zealman_00001.png'</span>] })
+});</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">批量删除 output 资产（按相对路径数组）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/input-assets/delete</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"paths"</span>: [
+    <span class="tk-str">"ref.png"</span>,
+    <span class="tk-str">"voice.mp3"</span>
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">批量删除 input 素材</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/outputs/clear</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"recursive"</span>: <span class="tk-kw">false</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">清空 output 目录
+
+recursive=true 会递归清掉所有子目录里的文件；默认 false 只清根目录第一层。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/input/clear</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"recursive"</span>: <span class="tk-kw">true</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">清空 ComfyUI input 目录
+
+与 output/clear 相同：recursive=true 递归删除所有文件。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/images/zip</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"paths"</span>: [
+    <span class="tk-str">"2025/a.png"</span>,
+    <span class="tk-str">"2025/b.png"</span>
+  ]
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"zipPath"</span>: <span class="tk-str">"/output/zips/output_1733900000000.zip"</span>,
+  <span class="tk-str">"filename"</span>: <span class="tk-str">"output_1733900000000.zip"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">把一组资产（或全部）打包成 zip，立即返回 zip URL
+
+paths 不传则打包 output 根目录所有支持的图片/视频文件；返回的 zipPath 可直接 GET 下载。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/assets/package/jobs</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"range"</span>: {
+    <span class="tk-str">"preset"</span>: <span class="tk-str">"today"</span>
+  }
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"id"</span>: <span class="tk-str">"a1b2-…"</span>,
+  <span class="tk-str">"status"</span>: <span class="tk-str">"queued"</span>,
+  <span class="tk-str">"progress"</span>: <span class="tk-num">0</span>,
+  <span class="tk-str">"assetCount"</span>: <span class="tk-num">12</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">创建打包任务（支持按时间范围 / 来源筛选，异步执行）
+
+range 支持 preset=today/week/month 或自定义 startDate/endDate；任务 ID 返回后用下面的 jobs/{id} 轮询进度。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/assets/package/jobs</code>
+      </div>
+  <p class="ep-note">查询所有打包任务列表（按时间倒序）</p>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/assets/package/jobs/{id}</code>
+      </div>
+  <p class="ep-note">查询单个打包任务进度（progress / status / 输出文件）</p>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/assets/package/files</code>
+      </div>
+  <p class="ep-note">列出已生成的打包 zip 文件（含下载链接）</p>
+</article>
+<article class="ep is-last">
+  <div class="ep-head">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/assets/package/files/{id}</code>
+      </div>
+  <p class="ep-note">删除一个已生成的打包 zip 文件</p>
+</article>
+</section>
+</section>
+<section id="concurrent" class="group">
+  <div class="group-head">
+    <h2>3. 并发接口 API</h2>
+    <span class="group-sub">调度多台 AutoDL 镜像机做批量生成</span>
+  </div>
+  <p class="group-intro">把多台 AutoDL 实例（镜像机）和本机主控 ComfyUI 当成一个「远程算力池」。面板「并发生成」页分为三块：**机器管理**（Token / 实例 / ComfyUI 启停）、**素材管理**（上传输入文件到 `/root/并发/{image,video,audio}`）、**批量生成**（任务队列与结果预览）。
+
+调用方也可直接走 HTTP API：AutoDL 实例接口需要 Token；镜像机控制与任务调度只需 mirror_url；**本机任务**不传 target_url（或留空）即可在主控 ComfyUI 上跑。文件类 input_values 支持公网 URL、base64、ComfyUI 上传后的 name，以及主控机白名单目录内的**本地绝对路径**（默认 `/root/并发` 及其子目录，可通过环境变量 `CONCURRENT_LOCAL_INPUT_DIRS` 扩展）。</p>
+  <section id="concurrent-quickstart" class="quickstart">
+  <div class="qs-head">
+    <h3>完整示例 · 用 2 台镜像机批量跑同一个工作流</h3>
+    <span class="qs-tag">QUICKSTART</span>
+  </div>
+  <p class="qs-intro">从 Token 到多机批跑、拉回结果。左侧为完整脚本；右侧 Step 解释各段含义。</p>
+  <div class="qs-layout">
+    <div class="qs-code-col"><div class="cb">
+  <div class="cb-head"><span class="cb-label">完整调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> BASE_URL = <span class="tk-str">"https://uu11197-78328d7ad669.bjb2.seetacloud.com:8443"</span>;
+<span class="tk-kw">const</span> TOKEN = <span class="tk-str">'AUTODL_TOKEN_xxxxxxxxxxxxxxxx'</span>;
+
+<span class="tk-kw">const</span> list = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/instance/list'</span>, {
+  method: <span class="tk-str">'POST'</span>,
+  headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({
+    token: TOKEN,
+    page_index: <span class="tk-num">1</span>,
+    page_size: <span class="tk-num">50</span>
+  })
+}).then(r =&gt; r.json());
+<span class="tk-kw">const</span> candidates = list.list
+  .filter(x =&gt; x.status === <span class="tk-str">'shutdown'</span>)
+  .slice(<span class="tk-num">0</span>, <span class="tk-num">2</span>);
+
+<span class="tk-kw">for</span> (<span class="tk-kw">const</span> ins <span class="tk-kw">of</span> candidates) {
+  <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/instance/power_on'</span>, {
+    method: <span class="tk-str">'POST'</span>,
+    headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+    body: JSON.stringify({
+      token: TOKEN,
+      instance_uuid: ins.instance_uuid
+    })
+  });
+}
+
+<span class="tk-kw">const</span> mirrors = [];
+<span class="tk-kw">for</span> (<span class="tk-kw">const</span> ins <span class="tk-kw">of</span> candidates) {
+  <span class="tk-kw">while</span> (<span class="tk-kw">true</span>) {
+    <span class="tk-kw">const</span> url =
+      <span class="tk-str">`${BASE_URL}/api/concurrent/instance/snapshot`</span> +
+      <span class="tk-str">`?token=${TOKEN}&amp;instance_uuid=${ins.instance_uuid}`</span>;
+    <span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(url).then(r =&gt; r.json());
+    <span class="tk-kw">const</span> dom = r.snapshot?.service_6008_domain;
+    <span class="tk-kw">if</span> (dom) {
+      mirrors.push(<span class="tk-str">'https://'</span> + dom);
+      <span class="tk-kw">break</span>;
+    }
+    <span class="tk-kw">await</span> <span class="tk-kw">new</span> Promise(res =&gt; setTimeout(res, <span class="tk-num">5000</span>));
+  }
+}
+
+<span class="tk-kw">for</span> (<span class="tk-kw">const</span> m <span class="tk-kw">of</span> mirrors) {
+  <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/mirror/start'</span>, {
+    method: <span class="tk-str">'POST'</span>,
+    headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+    body: JSON.stringify({ mirror_url: m })
+  });
+}
+
+<span class="tk-kw">const</span> inputs = [
+  <span class="tk-str">'https://example.com/a.png'</span>,
+  <span class="tk-str">'/root/并发/image/image_20260709-010435_c7faf2.png'</span>,  <span class="tk-cmt">// 主控白名单本地路径</span>
+  <span class="tk-str">'https://example.com/c.png'</span>,
+];
+<span class="tk-kw">const</span> submit = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/run-batch-async'</span>, {
+  method: <span class="tk-str">'POST'</span>,
+  headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({
+    workflow_id: <span class="tk-str">'my-workflow'</span>,
+    targets: mirrors,
+    jobs: inputs.map((src, i) =&gt; ({
+      id: <span class="tk-str">'job-'</span> + i,
+      input_values: {
+        <span class="tk-str">'12:image'</span>: src
+      }
+    }))
+  })
+}).then(r =&gt; r.json());
+<span class="tk-kw">const</span> runId = submit.run_id;
+
+<span class="tk-kw">while</span> (<span class="tk-kw">true</span>) {
+  <span class="tk-kw">const</span> url =
+    <span class="tk-str">`${BASE_URL}/api/concurrent/run-batch-status?run_id=${runId}`</span>;
+  <span class="tk-kw">const</span> s = <span class="tk-kw">await</span> fetch(url).then(r =&gt; r.json());
+  console.log(<span class="tk-str">`${s.done}/${s.total} 完成，错误 ${s.error}`</span>);
+
+  <span class="tk-kw">if</span> ([<span class="tk-str">'completed'</span>, <span class="tk-str">'cancelled'</span>, <span class="tk-str">'error'</span>].includes(s.status)) {
+    <span class="tk-kw">for</span> (<span class="tk-kw">const</span> job <span class="tk-kw">of</span> s.results || []) {
+      <span class="tk-kw">if</span> (job.status === <span class="tk-str">'done'</span>) {
+        <span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(
+          job.target_url + <span class="tk-str">'/api/workflow/result?prompt_id='</span> + job.prompt_id
+        ).then(r =&gt; r.json());
+
+        <span class="tk-cmt">// r.results 里是镜像机上的产出 URL。</span>
+        <span class="tk-cmt">// 用户自己的程序应把这些文件下载到自己的项目存储。</span>
+        <span class="tk-kw">for</span> (<span class="tk-kw">const</span> file <span class="tk-kw">of</span> r.results || []) {
+          <span class="tk-kw">const</span> fileUrl = job.target_url + file.url;
+          console.log(job.id, <span class="tk-str">'→'</span>, fileUrl);
+        }
+      }
+    }
+    <span class="tk-kw">break</span>;
+  }
+  <span class="tk-kw">await</span> <span class="tk-kw">new</span> Promise(r =&gt; setTimeout(r, <span class="tk-num">2000</span>));
+}</pre>
+</div></div>
+    <div class="qs-desc-col"><div class="qs-desc-step">
+  <h4>Step 1 · 面板地址与 AutoDL Token</h4>
+  <p>BASE_URL 是当前调度接口服务地址；TOKEN 在 AutoDL 控制台申请。用户自己的集群程序可以把它当作调度 API 地址，不需要依赖面板内置的资产管理流程。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 2 · 列出实例并挑选镜像机</h4>
+  <p>返回 { list: [{ instance_uuid, status, machine_alias, ... }] }。
+status 可能是 running / shutdown / starting。这里挑两台 shutdown 的当镜像机。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 3 · 开机（有卡模式）</h4>
+  <p>默认 power_on 是有卡模式（跑生成必须有卡）。省钱场景可加 mode: &quot;shutdown&quot; 走无卡模式，但无卡模式下跑不了生成。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 4 · 等待开机并解析镜像机面板 URL</h4>
+  <p>每台镜像机内部也运行着一份面板服务（端口 6008），AutoDL 给它一个对外域名 snapshot.service_6008_domain，前面拼 https:// 就是该镜像机的 mirror_url。
+
+开机需要时间，所以轮询 snapshot 接口直到出现这个字段（5 秒查一次）。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 5 · 在各镜像机上启动 ComfyUI</h4>
+  <p>该接口非阻塞，命令发出后镜像机会异步启动 ComfyUI；要确认是否启动完毕，需要轮询 /api/concurrent/mirror/comfy-status。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 6 · 提交异步批跑任务</h4>
+  <p>这是并发接口的核心：调度器会在 mirrors/targets 里寻找空闲机器，空闲机器立即接收下一个 job；如果多台机器都在跑，剩余 job 会留在队列里等待，等任意机器完成当前任务后继续派发。这样用户程序只需要提交一批 jobs，不需要自己判断哪台机器空闲。
+
+• workflow_id：要跑的工作流（注意：每台镜像机里都要先有这个工作流文件，否则得先用 /api/workflow/files/update 同步过去）
+• jobs：每个 job 是一次独立生成；id 任意填，用来在结果里对回去
+• input_values 文件字段：可填公网 URL、base64 data URI、ComfyUI 上传后的 name，或主控白名单内的本地绝对路径（如 `/root/并发/image/xxx.png`；可先通过 `/api/concurrent/input-assets/upload` 上传）
+• targets：可选，不传则用全部可用镜像机
+
+返回 { run_id }，是这次批跑的 ID，用它查进度。</p>
+</div>
+<div class="qs-desc-step">
+  <h4>Step 7 · 轮询进度并自行下载结果</h4>
+  <p>每隔 2 秒查一次 run-batch-status：返回 { status, done, total, error, results: [...] }。
+
+当 status 是 completed/cancelled/error 时，遍历 results：每个完成的 job 都有 target_url（哪台镜像机跑的）和 prompt_id（结果 ID）。用户自己的程序应使用 target_url + prompt_id 去对应镜像机查询结果，再把文件下载到自己的项目目录、数据库或对象存储中。</p>
+</div></div>
+  </div>
+</section>
+  <section id="concurrent-instance" class="sub">
+  <div class="sub-head">
+    <h3>AutoDL 实例管理</h3>
+    <span class="sub-meta">11 个接口</span>
+  </div>
+  <p class="sub-intro">所有接口都需要 AutoDL Token（在 https://www.autodl.com/console/center/settings/token 获取）。Token 仅在内存中转发到 AutoDL 官方 API，不写入服务器文件。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/self-uuid</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"instance_uuid"</span>: <span class="tk-str">"pro-7684c4a4e484"</span>,
+  <span class="tk-str">"hostname"</span>: <span class="tk-str">"autodl-pro-7684c4a4e484"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">推断本机 AutoDL 实例 UUID（从 hostname 解析）
+
+面板「机器管理」用于识别本机行。hostname 形如 autodl-pro-7684c4a4e484 时返回 instance_uuid=pro-7684c4a4e484；非 AutoDL 环境可能为 null。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/instance/list</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"token"</span>: <span class="tk-str">"AUTODL_TOKEN"</span>,
+  <span class="tk-str">"page_index"</span>: <span class="tk-num">1</span>,
+  <span class="tk-str">"page_size"</span>: <span class="tk-num">50</span>
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/instance/list'</span>, {
+  method: <span class="tk-str">'POST'</span>,
+  headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({ token, page_index: <span class="tk-num">1</span>, page_size: <span class="tk-num">50</span> })
+});
+<span class="tk-kw">const</span> { list, result_total } = <span class="tk-kw">await</span> r.json();</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"result_total"</span>: <span class="tk-num">3</span>,
+  <span class="tk-str">"list"</span>: [
+    {
+      <span class="tk-str">"instance_uuid"</span>: <span class="tk-str">"pro-xxx"</span>,
+      <span class="tk-str">"status"</span>: <span class="tk-str">"shutdown"</span>,
+      <span class="tk-str">"gpu_name"</span>: <span class="tk-str">"RTX 4090"</span>,
+      <span class="tk-str">"service_6008_domain"</span>: <span class="tk-str">"u123-app.openbayes.net"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">分页列出账号下的所有 AutoDL 实例</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/instance/create</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"token"</span>: <span class="tk-str">"AUTODL_TOKEN"</span>,
+  <span class="tk-str">"gpu_spec_uuid"</span>: <span class="tk-str">"spec-rtx4090-…"</span>,
+  <span class="tk-str">"req_gpu_amount"</span>: <span class="tk-num">1</span>,
+  <span class="tk-str">"expand_system_disk_by_gb"</span>: <span class="tk-num">0</span>,
+  <span class="tk-str">"instance_name"</span>: <span class="tk-str">"并发生成-镜像机"</span>
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"instance_uuid"</span>: <span class="tk-str">"pro-new-…"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">基于 Zealman 公共镜像应用，开一台新的 AutoDL 实例（默认即可用作镜像机）
+
+默认 application_uuid 指向 Zealman 公共镜像应用、application_version=latest——也就是说新实例开起来就是一台「干净的 Zealman 镜像机」，不会拷贝调用方当前容器里的运行时数据或自定义模型。需要带过自定义内容请走 AutoDL 自有的&quot;打包成镜像&quot;流程后再传 application_uuid / application_version。
+
+gpu_spec_uuid 是 AutoDL 后台的 GPU 规格 ID；data_center_list 可选限定机房；req_gpu_amount 默认 1。创建成功立即返回新实例的 instance_uuid，还需要 power_on 才能用。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/instance/status?token=&amp;instance_uuid=</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(<span class="tk-str">`${BASE_URL}/api/concurrent/instance/status?token=${token}&amp;instance_uuid=${uuid}`</span>);
+<span class="tk-kw">const</span> { status } = <span class="tk-kw">await</span> r.json();   <span class="tk-cmt">// shutdown / running / starting / ...</span></pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">查询单个实例的开关机/计费状态（轻量，可频繁轮询）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/instance/snapshot?token=&amp;instance_uuid=</code>
+      </div>
+  <p class="ep-note">查询实例完整快照（含 service_6008_domain，即镜像机的对外面板地址）
+
+snapshot.service_6008_domain 拼成 &quot;https://&quot; + 它，就是这台镜像机的 mirror_url，可直接传给后续 mirror/start、generate 接口。</p>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/instance/power_on</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"token"</span>: <span class="tk-str">"AUTODL_TOKEN"</span>,
+  <span class="tk-str">"instance_uuid"</span>: <span class="tk-str">"pro-xxx"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">开机指定实例（默认开机即按 GPU 规格计费）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/instance/power_off</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"token"</span>: <span class="tk-str">"AUTODL_TOKEN"</span>,
+  <span class="tk-str">"instance_uuid"</span>: <span class="tk-str">"pro-xxx"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">关机指定实例（停止计费，但实例和数据保留）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/instance/release</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"token"</span>: <span class="tk-str">"AUTODL_TOKEN"</span>,
+  <span class="tk-str">"instance_uuid"</span>: <span class="tk-str">"pro-xxx"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">释放（销毁）实例（必须先关机；释放后数据丢失，不可恢复）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/schedule-shutdown</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"token"</span>: <span class="tk-str">"AUTODL_TOKEN"</span>,
+  <span class="tk-str">"instance_uuids"</span>: [
+    <span class="tk-str">"pro-xxx"</span>,
+    <span class="tk-str">"pro-yyy"</span>
+  ],
+  <span class="tk-str">"shutdown_time"</span>: <span class="tk-str">"2026-07-09T18:00:00+08:00"</span>,
+  <span class="tk-str">"release_after_shutdown"</span>: <span class="tk-kw">false</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">预约定时关机（可选关机后自动释放）
+
+面板「机器管理」定时关闭功能的后端接口。shutdown_time 为 ISO 8601 时间字符串；到点后依次 power_off，若 release_after_shutdown=true 则在关机确认后再 release。同一时刻仅保留一份预约，重复提交会覆盖。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/schedule-shutdown</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"active"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"shutdown_time"</span>: <span class="tk-str">"2026-07-09T18:00:00+08:00"</span>,
+  <span class="tk-str">"remaining_ms"</span>: <span class="tk-num">3600000</span>,
+  <span class="tk-str">"instance_count"</span>: <span class="tk-num">2</span>,
+  <span class="tk-str">"release_after_shutdown"</span>: <span class="tk-kw">false</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">查询当前定时关机预约状态</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-head">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/concurrent/schedule-shutdown</code>
+      </div>
+  <p class="ep-note">取消定时关机预约</p>
+</article>
+</section>
+<section id="concurrent-mirror" class="sub">
+  <div class="sub-head">
+    <h3>镜像机 ComfyUI 控制</h3>
+    <span class="sub-meta">8 个接口</span>
+  </div>
+  <p class="sub-intro">镜像机 power_on 之后还需要再启动它里面的 ComfyUI 才能跑工作流。这一组接口本质上就是把请求转发到镜像机自己的 /api/comfy/* 接口；mirror_url 即镜像机面板的对外地址（带 https://）。
+
+如需在开机后切换该镜像机的 ComfyUI 版本，推荐顺序：mirror/stop（停 ComfyUI）→ mirror/switch-version（切版本）→ mirror/start（启动新版本）。切换前可先用 mirror/versions 查询该机可切版本与是否「就绪/缺包」。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/mirror/start</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"mirror_url"</span>: <span class="tk-str">"https://u123-app.openbayes.net"</span>
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/mirror/start'</span>, {
+  method: <span class="tk-str">'POST'</span>,
+  headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({ mirror_url })
+});</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">远程启动镜像机的 ComfyUI
+
+本接口会把请求转发到 mirror_url 对应镜像机自身的 /api/comfy/start 上执行。返回 success=true 仅表示&quot;启动命令已发出&quot;，是否真的启动好需要轮询 comfy-status。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/mirror/comfy-status?mirror_url=</code>
+      </div>
+  <p class="ep-note">代理查询镜像机 ComfyUI 是否运行
+
+返回内容与普通 /api/comfy/status 一致；建议每 2~5 秒查一次直到 running=true。</p>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/mirror/interrupt</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"mirror_url"</span>: <span class="tk-str">"https://u123-app.openbayes.net"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">中断镜像机 ComfyUI 当前任务</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/mirror/free</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"mirror_url"</span>: <span class="tk-str">"https://u123-app.openbayes.net"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">释放镜像机显存（卸载模型 + 清显存）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/mirror/stop</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"mirror_url"</span>: <span class="tk-str">"https://u123-app.openbayes.net"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">停止镜像机的 ComfyUI 进程（不影响 AutoDL 计费）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/mirror/versions?mirror_url=</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/mirror/versions?mirror_url='</span> + encodeURIComponent(mirror_url));
+<span class="tk-kw">const</span> { current, versions } = <span class="tk-kw">await</span> r.json();
+<span class="tk-cmt">// versions.filter(v =&gt; v.wheelsReady) 即该机可安全切换的版本</span></pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">查询镜像机可切换的 ComfyUI 版本列表
+
+转发到镜像机自身的 /api/comfy/versions。返回 { success, current, versions:[{ id, label, ref, refType, wheelsReady, isCurrent }] }。每台镜像可切版本取决于它自己镜像里有哪些版本包（comfyui-versions/packages）与本地 git ref，可能各不相同；切换前应先查此接口，只选 wheelsReady=true 的版本，避免缺包/缺 ref 导致失败。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/mirror/switch-version</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"mirror_url"</span>: <span class="tk-str">"https://u123-app.openbayes.net"</span>,
+  <span class="tk-str">"version"</span>: <span class="tk-str">"0.25.1"</span>
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt">// 1) 先停 ComfyUI</span>
+<span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/mirror/stop'</span>, {
+  method: <span class="tk-str">'POST'</span>, headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({ mirror_url })
+});
+<span class="tk-cmt">// 2) 切版本</span>
+<span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/mirror/switch-version'</span>, {
+  method: <span class="tk-str">'POST'</span>, headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({ mirror_url, version: <span class="tk-str">'0.25.1'</span> })
+});
+<span class="tk-cmt">// 3) 启动新版本</span>
+<span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/mirror/start'</span>, {
+  method: <span class="tk-str">'POST'</span>, headers: { <span class="tk-str">'Content-Type'</span>: <span class="tk-str">'application/json'</span> },
+  body: JSON.stringify({ mirror_url })
+});</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">切换镜像机的 ComfyUI 版本
+
+转发到镜像机自身的 /api/comfy/switch-version。前置条件由镜像机本机校验：必须先停 ComfyUI（否则返回 { code:2, needStop:true }）。流程会 git checkout 目标 ref（本地缺该 tag/commit 时会自动学术加速联网拉取兜底）+ 离线安装该版本专用依赖。成功返回 { code:0, success:true, version }，切换后 ComfyUI 仍为停止态，需再调 mirror/start 启动。推荐顺序：mirror/stop → mirror/switch-version → mirror/start。</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/probe?mirror_url=</code>
+      </div>
+  <p class="ep-note">探测镜像机连通性（综合检查面板可达 + ComfyUI 是否启动）</p>
+</article>
+</section>
+<section id="concurrent-input-assets" class="sub">
+  <div class="sub-head">
+    <h3>输入素材管理</h3>
+    <span class="sub-meta">4 个接口</span>
+  </div>
+  <p class="sub-intro">对应面板「素材管理」页。上传的图像/视频/音频落盘到主控机 `/root/并发/{image,video,audio}`（白名单目录，可作为 generate / run-batch 的本地路径输入）。预览 URL 为 `/concurrent-input/{type}/{filename}`。上传后文件名会规范化为 `{type}_{YYYYMMDD-HHMMSS}_{rand}{ext}`。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/input-assets?type=all|image|video|audio</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/input-assets?type=image'</span>);
+<span class="tk-kw">const</span> { base, assets } = <span class="tk-kw">await</span> r.json();
+<span class="tk-cmt">// assets[0].localPath → 可直接填入 job.input_values 的 file 字段</span></pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"base"</span>: <span class="tk-str">"/root/并发"</span>,
+  <span class="tk-str">"assets"</span>: [
+    {
+      <span class="tk-str">"type"</span>: <span class="tk-str">"image"</span>,
+      <span class="tk-str">"name"</span>: <span class="tk-str">"image_20260709-010435_c7faf2.png"</span>,
+      <span class="tk-str">"localPath"</span>: <span class="tk-str">"/root/并发/image/image_20260709-010435_c7faf2.png"</span>,
+      <span class="tk-str">"size"</span>: <span class="tk-num">1234567</span>,
+      <span class="tk-str">"mtime"</span>: <span class="tk-num">1783530275672</span>,
+      <span class="tk-str">"url"</span>: <span class="tk-str">"/concurrent-input/image/image_20260709-010435_c7faf2.png"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">列出已上传的输入素材
+
+type 默认 all；返回 assets[]，每项含 type、name、localPath、size、mtime、url（预览地址）。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/input-assets/upload</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> form = <span class="tk-kw">new</span> FormData();
+form.append(<span class="tk-str">'type'</span>, <span class="tk-str">'image'</span>);
+form.append(<span class="tk-str">'file'</span>, fileBlob, <span class="tk-str">'photo.png'</span>);
+<span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/input-assets/upload'</span>, {
+  method: <span class="tk-str">'POST'</span>,
+  body: form
+});
+<span class="tk-kw">const</span> { asset } = <span class="tk-kw">await</span> r.json();
+console.log(asset.localPath);  <span class="tk-cmt">// 用于 input_values</span></pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"asset"</span>: {
+    <span class="tk-str">"type"</span>: <span class="tk-str">"image"</span>,
+    <span class="tk-str">"name"</span>: <span class="tk-str">"image_20260709-010435_c7faf2.png"</span>,
+    <span class="tk-str">"localPath"</span>: <span class="tk-str">"/root/并发/image/image_20260709-010435_c7faf2.png"</span>,
+    <span class="tk-str">"url"</span>: <span class="tk-str">"/concurrent-input/image/image_20260709-010435_c7faf2.png"</span>
+  }
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">上传单个输入素材（multipart）
+
+字段：file（文件）、type（image|video|audio）。扩展名必须与 type 匹配。单文件上限 10GB。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/concurrent/input-assets</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"paths"</span>: [
+    <span class="tk-str">"/root/并发/image/image_20260709-010435_c7faf2.png"</span>
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">批量删除指定本地路径的素材文件
+
+body.paths 必须是 `/root/并发` 下的绝对路径，服务端会校验防止越权删除。</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/concurrent/input-assets/clear/:type</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/input-assets/clear/image'</span>, {
+  method: <span class="tk-str">'DELETE'</span>
+});</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">清空某一类型目录下的全部素材（image / video / audio）</p></div>
+  </div>
+</article>
+</section>
+<section id="concurrent-tasks" class="sub">
+  <div class="sub-head">
+    <h3>任务调度</h3>
+    <span class="sub-meta">8 个接口</span>
+  </div>
+  <p class="sub-intro">对应面板「批量生成」页。单任务可用 generate 指定 target_url（镜像机）或留空跑本机；多任务建议 run-batch / run-batch-async 由调度器排队与负载均衡。文件输入支持 URL 素材与本地素材两种模式（面板切换「URL素材 / 本地素材」）。运行中进度可通过 WebSocket（本机 `/comfyui-ws`、镜像 `/concurrent-mirror-ws`）或 poll/status 获取；跑完后用 result / workflow/result 拉取产物。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/generate</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"workflow_id"</span>: <span class="tk-str">"example-workflow.json"</span>,
+  <span class="tk-str">"jobs"</span>: [
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"job-local"</span>,
+      <span class="tk-str">"input_values"</span>: {
+        <span class="tk-str">"12:image"</span>: <span class="tk-str">"/root/并发/image/image_20260709-010435_c7faf2.png"</span>
+      }
+    },
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"job-mirror"</span>,
+      <span class="tk-str">"target_url"</span>: <span class="tk-str">"https://u123-app.openbayes.net"</span>,
+      <span class="tk-str">"input_values"</span>: {
+        <span class="tk-str">"12:image"</span>: <span class="tk-str">"https://example.com/in2.png"</span>
+      }
+    }
+  ]
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"results"</span>: [
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"job-local"</span>,
+      <span class="tk-str">"target"</span>: <span class="tk-str">"local"</span>,
+      <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+      <span class="tk-str">"prompt_id"</span>: <span class="tk-str">"…"</span>,
+      <span class="tk-str">"client_id"</span>: <span class="tk-str">"concurrent-job-local-abc"</span>
+    },
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"job-mirror"</span>,
+      <span class="tk-str">"target"</span>: <span class="tk-str">"mirror"</span>,
+      <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+      <span class="tk-str">"prompt_id"</span>: <span class="tk-str">"…"</span>,
+      <span class="tk-str">"client_id"</span>: <span class="tk-str">"concurrent-mirror-job-mirror-xyz"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">在指定主机上提交一组任务（target_url 为空则跑本机）
+
+workflow_id 必须是已保存的工作流。jobs 数组每项含 id、可选 target_url（镜像机面板地址，省略或空字符串=本机主控）、input_values。服务端会对本地绝对路径文件自动读取并上传到目标 ComfyUI。同步并发提交，返回 results（含 prompt_id、client_id），后续用 poll/result 或 WebSocket 拿进度与产物。多任务场景更推荐 run-batch-async。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/run-batch</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"workflow_id"</span>: <span class="tk-str">"example-workflow.json"</span>,
+  <span class="tk-str">"jobs"</span>: [
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"job-1"</span>,
+      <span class="tk-str">"input_values"</span>: {
+        <span class="tk-str">"12:image"</span>: <span class="tk-str">"https://example.com/a.png"</span>
+      }
+    },
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"job-2"</span>,
+      <span class="tk-str">"input_values"</span>: {
+        <span class="tk-str">"12:image"</span>: <span class="tk-str">"https://example.com/b.png"</span>
+      }
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">同步批跑（队列调度 + 失败重试，阻塞直到全部任务结束才返回）
+
+面板会自动按机器忙闲做动态分配：空闲镜像机立即接收任务，全部机器都忙时任务留在队列等待；扩容（加镜像机）后未开始任务可被新机器接管。耗时长，建议异步版本。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/run-batch-async</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"workflow_id"</span>: <span class="tk-str">"example-workflow.json"</span>,
+  <span class="tk-str">"jobs"</span>: [
+    {
+      <span class="tk-str">"id"</span>: <span class="tk-str">"job-1"</span>,
+      <span class="tk-str">"input_values"</span>: {
+        <span class="tk-str">"12:image"</span>: <span class="tk-str">"https://example.com/a.png"</span>
+      }
+    }
+  ]
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"run_id"</span>: <span class="tk-str">"run-9f3c…"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">推荐：异步批跑，立刻返回 run_id，再用 status 接口轮询
+
+请求格式与 run-batch 相同。提交后立即返回 run_id；后台持续按空闲机器派发队列任务，机器忙时不丢任务、只排队等待。用 GET /api/concurrent/run-batch-status?run_id=… 拉进度；想取消用 run-batch-cancel。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/run-batch-status?run_id=</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">async</span> <span class="tk-kw">function</span> waitBatch(runId) {
+  <span class="tk-kw">while</span> (<span class="tk-kw">true</span>) {
+    <span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(<span class="tk-str">`${BASE_URL}/api/concurrent/run-batch-status?run_id=${runId}`</span>);
+    <span class="tk-kw">const</span> data = <span class="tk-kw">await</span> r.json();
+    console.log(<span class="tk-str">`${data.done}/${data.total} 完成，错误 ${data.error} 个`</span>);
+    <span class="tk-kw">if</span> ([<span class="tk-str">'completed'</span>,<span class="tk-str">'cancelled'</span>,<span class="tk-str">'error'</span>].includes(data.status)) <span class="tk-kw">return</span> data;
+    <span class="tk-kw">await</span> <span class="tk-kw">new</span> Promise(r =&gt; setTimeout(r, <span class="tk-num">2000</span>));
+  }
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">查询异步批跑进度（按 run_id）
+
+status 取值：queued / running / completed / cancelled / error。results 数组里每项含 status（queued/running/done/error）、stage、progress（0~100）、retry_count。</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/run-batch-cancel</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"run_id"</span>: <span class="tk-str">"run-9f3c…"</span>
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">取消正在运行的批跑（已经在跑的任务会跑完，未开始的不再调度）</p></div>
+  </div>
+</article>
+<article class="ep">
+  <div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/poll?mirror_url=&amp;prompt_id=</code>
+      </div>
+  <p class="ep-note">代理轮询某镜像机上单个任务的 history（进度 + 节点状态）
+
+本质是把请求转给镜像机的 /api/comfy/proxy/history。本机任务请直接用 BASE_URL + /api/comfy/proxy/history?prompt_id=…。</p>
+</article>
+<article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/result?mirror_url=&amp;prompt_id=&amp;source_host_name=&amp;source_host_id=&amp;workflow_id=</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(
+  BASE_URL + <span class="tk-str">'/api/concurrent/result?'</span> + <span class="tk-kw">new</span> URLSearchParams({
+    mirror_url: <span class="tk-str">'https://u123-app.openbayes.net'</span>,
+    prompt_id: <span class="tk-str">'abc-123'</span>,
+    source_host_name: <span class="tk-str">'镜像机-A'</span>,
+    source_host_id: <span class="tk-str">'pro-xxx'</span>,
+    workflow_id: <span class="tk-str">'my-workflow.json'</span>
+  })
+);
+<span class="tk-kw">const</span> { files } = <span class="tk-kw">await</span> r.json();</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"files"</span>: [
+    {
+      <span class="tk-str">"original"</span>: <span class="tk-str">"zealman_00001.png"</span>,
+      <span class="tk-str">"local"</span>: <span class="tk-str">"1783530275672_zealman_00001.png"</span>,
+      <span class="tk-str">"url"</span>: <span class="tk-str">"/output/concurrent/1783530275672_zealman_00001.png"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">主控代理：从镜像机拉回结果文件并写入集群资产目录
+
+面板批量生成在镜像机任务完成后会调此接口，将产出下载到主控 `/root/ComfyUI/output/concurrent/` 并登记 manifest。workflow_id 可选，用于过滤高清放大等中间预览节点，只保留最终产出。返回 files[] 含 url（/output/concurrent/…）。</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">{target_url}/api/workflow/result?prompt_id={prompt_id}</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-cmt">// job 来自 /api/concurrent/run-batch-status 的 results[]</span>
+<span class="tk-kw">const</span> result = <span class="tk-kw">await</span> fetch(
+  job.target_url + <span class="tk-str">'/api/workflow/result?prompt_id='</span> + job.prompt_id
+).then(r =&gt; r.json());
+
+<span class="tk-kw">for</span> (<span class="tk-kw">const</span> item <span class="tk-kw">of</span> result.results || []) {
+  <span class="tk-kw">const</span> fileUrl = job.target_url + item.url;
+  <span class="tk-kw">const</span> blob = <span class="tk-kw">await</span> fetch(fileUrl).then(r =&gt; r.blob());
+
+  <span class="tk-cmt">// 这里换成你自己的保存逻辑：</span>
+  <span class="tk-cmt">// - 上传到 S3 / OSS / MinIO</span>
+  <span class="tk-cmt">// - 写入你的业务项目目录</span>
+  <span class="tk-cmt">// - 登记到自己的数据库</span>
+  <span class="tk-kw">await</span> saveToYourProjectStorage({
+    jobId: job.id,
+    type: item.type,
+    url: fileUrl,
+    blob
+  });
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"pending"</span>: <span class="tk-kw">false</span>,
+  <span class="tk-str">"results"</span>: [
+    {
+      <span class="tk-str">"type"</span>: <span class="tk-str">"image"</span>,
+      <span class="tk-str">"url"</span>: <span class="tk-str">"/output/2026/zealman_00001.png"</span>,
+      <span class="tk-str">"filename"</span>: <span class="tk-str">"zealman_00001.png"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">无主控推荐：到实际执行任务的镜像机读取结果，再由用户程序自行保存
+
+run-batch-status 的每个完成 job 会带 target_url 与 prompt_id。target_url 是那台镜像机的面板地址；prompt_id 是该机器上的任务 ID。用户自己的集群软件应直接请求 target_url + /api/workflow/result?prompt_id=...，拿到 results 后把文件下载到自己的项目目录、数据库、NAS 或对象存储中，而不是依赖面板内置的主控资产回收。prompt_id 同样仅存于该镜像机 ComfyUI 内存 history，镜像机或 ComfyUI 重启后即失效，须及时落库。</p></div>
+  </div>
+</article>
+</section>
+<section id="concurrent-cluster-assets" class="sub">
+  <div class="sub-head">
+    <h3>集群资产</h3>
+    <span class="sub-meta">2 个接口</span>
+  </div>
+  <p class="sub-intro">对应面板「批量生成」结果预览与集群资产列表。镜像机任务完成后主控会调 `/api/concurrent/result` 下载并登记；本机任务完成后调 `/api/concurrent/record-local` 将 ComfyUI 产出复制到 `/root/ComfyUI/output/concurrent/` 并写入 manifest。`GET /api/concurrent/assets` 返回全部有效资产（按时间倒序），每项含 sourceHost、promptId、workflowId、url（`/output/concurrent/…` 预览地址）。</p>
+  <article class="ep">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method GET">GET</span>
+        <code class="path">/api/concurrent/assets</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">调用示例</span></div>
+  <pre class="api-syntax"><span class="tk-kw">const</span> r = <span class="tk-kw">await</span> fetch(BASE_URL + <span class="tk-str">'/api/concurrent/assets'</span>);
+<span class="tk-kw">const</span> { assets } = <span class="tk-kw">await</span> r.json();
+<span class="tk-cmt">// assets[0].url → 可直接拼 BASE_URL 预览</span></pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"assets"</span>: [
+    {
+      <span class="tk-str">"localFile"</span>: <span class="tk-str">"1783530275672_zealman_00001.png"</span>,
+      <span class="tk-str">"sourceHost"</span>: <span class="tk-str">"镜像机-A"</span>,
+      <span class="tk-str">"sourceHostId"</span>: <span class="tk-str">"pro-xxx"</span>,
+      <span class="tk-str">"originalFile"</span>: <span class="tk-str">"zealman_00001.png"</span>,
+      <span class="tk-str">"promptId"</span>: <span class="tk-str">"abc-123"</span>,
+      <span class="tk-str">"timestamp"</span>: <span class="tk-num">1783530275672</span>,
+      <span class="tk-str">"workflowId"</span>: <span class="tk-str">"my-workflow.json"</span>,
+      <span class="tk-str">"url"</span>: <span class="tk-str">"/output/concurrent/1783530275672_zealman_00001.png"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">列出主控登记的集群生成资产（manifest + 本地文件校验）
+
+只返回 manifest 中且本地文件仍存在的条目。assets[] 每项含 localFile、sourceHost、sourceHostId、originalFile、promptId、timestamp、workflowId、url。</p></div>
+  </div>
+</article>
+<article class="ep is-last">
+  <div class="ep-grid has-code">
+    <div class="ep-codes"><div class="ep-head">
+        <span class="method POST">POST</span>
+        <code class="path">/api/concurrent/record-local</code>
+      </div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">请求体</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"prompt_id"</span>: <span class="tk-str">"abc-123"</span>,
+  <span class="tk-str">"workflow_id"</span>: <span class="tk-str">"my-workflow.json"</span>,
+  <span class="tk-str">"source_host_name"</span>: <span class="tk-str">"本机（主控）"</span>,
+  <span class="tk-str">"source_host_id"</span>: <span class="tk-str">"__local__"</span>,
+  <span class="tk-str">"files"</span>: [
+    {
+      <span class="tk-str">"filename"</span>: <span class="tk-str">"zealman_00001.png"</span>,
+      <span class="tk-str">"type"</span>: <span class="tk-str">"output"</span>
+    }
+  ]
+}</pre>
+</div>
+<div class="cb">
+  <div class="cb-head"><span class="cb-label">响应示例</span></div>
+  <pre class="api-syntax">{
+  <span class="tk-str">"success"</span>: <span class="tk-kw">true</span>,
+  <span class="tk-str">"files"</span>: [
+    {
+      <span class="tk-str">"original"</span>: <span class="tk-str">"zealman_00001.png"</span>,
+      <span class="tk-str">"local"</span>: <span class="tk-str">"1783530275672_zealman_00001.png"</span>,
+      <span class="tk-str">"url"</span>: <span class="tk-str">"/output/concurrent/1783530275672_zealman_00001.png"</span>
+    }
+  ]
+}</pre>
+</div></div>
+    <div class="ep-desc"><p class="ep-note">本机任务完成后：复制 ComfyUI 产出到集群资产目录并登记
+
+面板在本机 ComfyUI 任务完成时调用。files 来自 `/api/workflow/result` 或 history 的 outputs；每项含 filename、type（output/temp）、可选 subfolder。source_host_name / source_host_id 可选，默认「本机（主控）」/ `__local__`。</p></div>
+  </div>
+</article>
+</section>
+</section>
+    </main>
+  </div>
+</body>
+</html>
