@@ -532,6 +532,80 @@ command -v aria2c
 HF_ENDPOINT= ./setup.sh --with-comfyui
 ```
 
+### ComfyUI 400：`unet_name ... not in list` / `split_files/diffusion_models/...`
+
+报错形如：
+
+```text
+unet_name: 'wan2.2_animate_14B_bf16.safetensors' not in
+['rt_detr_v4-x-hgnet_fp16.safetensors',
+ 'split_files/diffusion_models/wan2.2_animate_14B_bf16.safetensors']
+```
+
+**原因**：手动 `hf download --local-dir` 时保留了仓库内相对路径，文件落在
+`models/diffusion_models/split_files/diffusion_models/...`，而 `.env` 期望的是
+扁平文件名 `models/diffusion_models/wan2.2_animate_14B_bf16.safetensors`。
+
+服务本身是好的（`/health` 里 `engine.ok: true`）；这是**模型文件位置**问题。
+
+一键排查（把 `M` 改成你的 ComfyUI models 目录）：
+
+```bash
+M=/root/autodl-tmp/ComfyUI/models   # 或 ~/pic2video_workflow/ComfyUI/models
+# 1) ComfyUI 实际能看到哪些 diffusion 权重
+curl -s http://127.0.0.1:8188/object_info/UNETLoader | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); print('\n'.join(d['UNETLoader']['input']['required']['unet_name'][0]))"
+# 2) 磁盘上真实路径（找嵌套的 split_files）
+find "$M" -type f -name '*.safetensors' | sort
+find "$M" -type d -name split_files
+# 3) .env 里配置的名字
+grep -E 'WANANIMATE_|SCAILSWAP_UNET' /root/pic2video_workflow/.env
+```
+
+修复（把嵌套文件挪到对应子目录根下，再重启 ComfyUI）：
+
+```bash
+M=/root/autodl-tmp/ComfyUI/models
+
+# 主模型
+mv -n "$M/diffusion_models/split_files/diffusion_models/"*.safetensors \
+      "$M/diffusion_models/" 2>/dev/null || true
+# 其它常见嵌套（按实际 find 结果执行）
+mv -n "$M/text_encoders/split_files/text_encoders/"*.safetensors \
+      "$M/text_encoders/" 2>/dev/null || true
+mv -n "$M/clip_vision/split_files/clip_vision/"*.safetensors \
+      "$M/clip_vision/" 2>/dev/null || true
+mv -n "$M/vae/split_files/vae/"*.safetensors \
+      "$M/vae/" 2>/dev/null || true
+mv -n "$M/loras/split_files/loras/"*.safetensors \
+      "$M/loras/" 2>/dev/null || true
+mv -n "$M/checkpoints/checkpoints/"*.safetensors \
+      "$M/checkpoints/" 2>/dev/null || true
+
+# 清掉空的嵌套目录（可选）
+find "$M" -type d -name split_files -exec rm -rf {} + 2>/dev/null || true
+
+# 确认扁平名存在
+ls -lh "$M/diffusion_models/wan2.2_animate_14B_bf16.safetensors"
+# 重启 ComfyUI 后再 curl 一次 UNETLoader，列表里应只有文件名、没有 split_files/ 前缀
+```
+
+临时绕过（不推荐，其它模型也可能嵌套）：在 `.env` 写
+
+```bash
+WANANIMATE_UNET=split_files/diffusion_models/wan2.2_animate_14B_bf16.safetensors
+```
+
+然后重启 API。仍建议按上面把文件挪平。
+
+### 素材 FileNotFoundError：`face.jpg`
+
+```bash
+ls -lh /root/autodl-tmp/face.* /root/autodl-tmp/talk.*
+# 用真实存在的路径，例如 face.png
+python examples/test_api.py --image /root/autodl-tmp/face.png --video /root/autodl-tmp/talk.mp4 ...
+```
+
 ### 模型放网盘再拷到实例
 
 在能高速访问 HF 的机器上下好后，按第 6.3 节目录结构打包，再传到 AutoDL 数据盘：
