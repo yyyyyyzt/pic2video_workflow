@@ -18,7 +18,12 @@ Wan2.2-Animate 把**身体动作**与**面部表情**解耦成两路条件分别
         → SDPoseKeypointExtractor            → 全身关键点（含 68 点人脸）
             → SDPoseDrawKeypoints            → pose_video（骨架渲染）
             → SDPoseFaceBBoxes + CropByBBoxes → face_video（512×512 人脸序列）
-    SAM3_VideoTrack + SAM3_TrackToMask        → character_mask（替代 Points Editor）
+    RTDETR 人体框 → SAM3_Detect（按框分割，不用文本提示）
+        → GrowMask                           → character_mask（替换模式重绘区域）
+
+替换模式不用 ``SAM3_VideoTrack`` 的文本开放词检测：该路径在口播素材上常得到
+空掩码（全 0），WanAnimate 会把整段视为「保留原视频」——表现为完全不换脸。
+改为复用已经算好的 RT-DETR 框走 SAM3 的 box 分割，稳定得多。
 
 替换模式（mix）额外接入 ``background_video``（= 驱动视频原片）与
 ``character_mask``：模型只在掩码区域重绘新角色，掩码外保留原始背景与光照，
@@ -270,23 +275,26 @@ class WanAnimateEngine(Engine):
             video_frame_offset=0,
         )
 
-        # --- 替换模式：原视频作背景 + SAM3 人物掩码限定重绘区域 ---
+        # --- 替换模式：原视频作背景 + 人物掩码限定重绘区域 ---
+        # 不用 SAM3_VideoTrack 文本检测：口播场景常得到空掩码 → 整段保留原脸。
+        # 改为 RT-DETR 人体框 + SAM3_Detect 的 box 分割（不传 conditioning，
+        # 才能走 box-only 路径），再 GrowMask 扩一点边缘（头发/衣服不易被切掉）。
         if is_replacement:
             node("sam3_ckpt", "CheckpointLoaderSimple", ckpt_name=cfg.sam3_checkpoint)
-            sam3_cond = node(
-                "sam3_cond", "CLIPTextEncode",
-                clip=["sam3_ckpt", 1], text=task.video_object,
-            )
-            track = node(
-                "sam3_track", "SAM3_VideoTrack",
-                images=drv_frames, model=["sam3_ckpt", 0], conditioning=sam3_cond,
-                detection_threshold=float(task.extra.get("detection_threshold", 0.5)),
-                max_objects=int(task.max_objects), detect_interval=1,
+            raw_mask = node(
+                "sam3_detect", "SAM3_Detect",
+                model=["sam3_ckpt", 0],
+                image=drv_frames,
+                bboxes=person_bboxes,
+                threshold=float(task.extra.get("detection_threshold", 0.35)),
+                refine_iterations=int(task.extra.get("sam3_refine_iterations", 2)),
+                individual_masks=False,
             )
             character_mask = node(
-                "character_mask", "SAM3_TrackToMask",
-                track_data=track,
-                object_indices=str(task.extra.get("object_indices", "")),
+                "character_mask", "GrowMask",
+                mask=raw_mask,
+                expand=int(task.extra.get("mask_grow", 12)),
+                tapered_corners=True,
             )
             animate_inputs["background_video"] = drv_frames
             animate_inputs["character_mask"] = character_mask
