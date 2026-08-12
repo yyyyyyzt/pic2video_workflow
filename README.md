@@ -1,16 +1,40 @@
-# 可灵数字人视频生成（最小实现）
+# 可灵数字人视频生成
 
-基于**可灵 AI 数字角色 2.0** 官方 API 的单文件实现：上传**一张角色图** + **一段音频（2~60 秒）** + **一句提示词**，直接生成口型、表情、动作俱全的数字人视频。
+基于**可灵 AI 数字角色 2.0** 官方 API：**一张角色图** + **一段音频（或一段台词自动配音）** + **一句提示词**，直接生成口型、表情、动作俱全的数字人视频。
+
+提供两种用法：**网页控制台**（上传、TTS 配音、看任务进度）和**命令行**。
 
 不再需要自托管 GPU、模型下载、分块拼接——官方接口单次即支持最长 5 分钟内容（音频驱动模式单段音频上限 60 秒，正好覆盖 60 秒测试）。
 
 - 使用指南：[数字角色 2.0 使用指南](https://docs.qingque.cn/d/home/eZQCNHbAH5WUzp1SCYw0uTUcQ?identityId=2MueRKz7Jhc)
 - API 文档：[数字人接口](https://klingai.com/document-api/api/video/avatar)
 
-## 快速开始
+## 网页控制台（推荐）
 
 ```bash
-# 1) 安装依赖（仅 requests + PyJWT 两个包）
+pip install -r requirements.txt
+cp .env.example .env        # 填入密钥，见下方「快速开始」第 2 步
+python3 server.py           # 打开 http://127.0.0.1:8000
+```
+
+界面上可以：
+
+- 拖入**角色图**（自带预览）
+- 配音二选一：**上传音频**，或**填台词自动 TTS 配音**（14 种音色、可调语速、能试听）
+- 从 `prompts/` **一键载入提示词模板**（台词稿会自动载入到台词框，不会混进提示词）
+- 选 `std` / `pro`，可勾选生成后自动跑**抖动后处理**
+- 右侧看**任务进度**：阶段（配音 → 提交 → 生成 → 下载 → 后处理）、已耗时、实时日志，完成后直接在页面里播放和下载
+
+任务串行执行以免打爆 API 并发额度；状态存在 `data/jobs.json`，服务重启后历史仍在，未完成的会继续轮询。无登录鉴权，默认只监听 `127.0.0.1`，需要内网访问再加 `--host 0.0.0.0`。
+
+```bash
+python3 server.py --host 0.0.0.0 --port 9000
+```
+
+## 快速开始（命令行）
+
+```bash
+# 1) 安装依赖
 pip install -r requirements.txt
 
 # 2) 配置密钥
@@ -36,15 +60,27 @@ python3 kling_avatar.py --image face.jpg --audio speech.mp3 \
     --prompt-file prompts/electricity_safety_full.txt -o result_full.mp4
 ```
 
-脚本会自动完成：本地文件转 Base64 → 提交任务 → 轮询状态 → 下载成片。60 秒素材通常十几分钟内完成。
+不想自己准备音频，可以直接给台词让脚本走 TTS：
+
+```bash
+python3 kling_avatar.py --image face.jpg \
+    --script-file prompts/electricity_safety_script.txt \
+    --voice genshin_vindi2 --voice-speed 1.0 \
+    --prompt-file prompts/electricity_safety_recommended.txt -o result.mp4
+
+python3 kling_avatar.py --list-voices     # 查看可用音色
+```
+
+脚本会自动完成：本地文件转 Base64 →（可选 TTS 配音）→ 提交任务 → 轮询状态 → 下载成片。60 秒素材通常十几分钟内完成。
 
 ## 参数说明
 
 | 参数 | 必填 | 说明 |
 | :-- | :-- | :-- |
 | `--image` | 是 | 角色图，本地文件或 URL。jpg/jpeg/png，≤10MB，宽高 ≥300px，宽高比 1:2.5~2.5:1 |
-| `--audio` | 二选一 | 驱动音频，本地文件或 URL。mp3/wav/m4a/aac，≤5MB，**时长 2~60 秒**（口型跟随音频） |
-| `--audio-id` | 二选一 | 可灵 TTS 接口生成的音频 ID（30 天内有效） |
+| `--audio` | 四选一 | 驱动音频，本地文件或 URL。mp3/wav/m4a/aac，≤5MB，**时长 2~60 秒**（口型跟随音频） |
+| `--audio-id` | 四选一 | 已有的可灵音频 ID（30 天内有效） |
+| `--script` / `--script-file` | 四选一 | 台词文本，自动走 TTS 合成配音（单次 ≤1000 字），配 `--voice` / `--voice-speed` |
 | `--prompt` / `--prompt-file` | 否 | 提示词；文件版方便编辑测试（`#` 行是注释）。≤2500 字符。**台词不要写进提示词**，口型跟着音频走 |
 | `--mode` | 否 | `std` 标准模式（性价比高，默认）/ `pro` 专家模式（质量更高） |
 | `--output` | 否 | 输出路径，默认 `avatar_output.mp4` |
@@ -232,12 +268,26 @@ python3 kling_avatar.py --image face.jpg --audio speech_60s.mp3 \
   长视频重抽成本高、且尖峰位置随机，不保证变少——优先用后处理修。
   「锁镜头 + 小动作」的提示词更适合用作**新项目的预防**，而不是为这个问题返工重抽。
 
+## 项目结构
+
+```
+klingclient.py   API 核心：鉴权、媒体编码、数字人任务、TTS（CLI 与 Web 共用）
+kling_avatar.py  命令行入口
+server.py        FastAPI Web 控制台（任务队列 + 进度 + 持久化）
+web/index.html   前端单页（原生 JS，无构建步骤）
+stabilize.py     抖动后处理（诊断 + 多种方法）
+prompts/         可编辑提示词模板与台词稿
+data/            运行数据：uploads / outputs / jobs.json（已 gitignore）
+```
+
 ## 底层接口（脚本封装的内容）
 
 ```
 POST {base}/v1/videos/avatar/image2video      # 创建任务
      body: { image, sound_file | audio_id, prompt?, mode? }
 GET  {base}/v1/videos/avatar/image2video/{id} # 查询任务（succeed 后含视频 URL）
+POST {base}/v1/audio/tts                      # 文本转语音，同步返回 audio_id
+     body: { text, voice_id, voice_language, voice_speed }
 ```
 
 鉴权支持两种：

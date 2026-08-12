@@ -1,7 +1,11 @@
 requests>=2.31
 PyJWT>=2.8
 
-# 后处理（stabilize.py / kling_avatar.py --stabilize）才需要；
-# 只调 API 生成视频可以不装。另需系统安装 ffmpeg。
+# Web 控制台（server.py）
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+
+# 后处理（stabilize.py / --stabilize）才需要；另需系统安装 ffmpeg
 opencv-python-headless>=4.8
 numpy>=1.24

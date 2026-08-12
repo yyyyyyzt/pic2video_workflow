@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>可灵数字人控制台</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel-2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#4f8cff; --accent-soft:#4f8cff22;
+    --ok:#3ecf8e; --warn:#f0b849; --err:#ff6b6b; --radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:var(--accent)}
+  .wrap{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+  h1{font-size:19px;margin:0;font-weight:650;letter-spacing:.3px}
+  .badge{font-size:12px;padding:4px 10px;border-radius:99px;background:var(--panel-2);
+    border:1px solid var(--line);color:var(--muted)}
+  .badge.ok{color:var(--ok);border-color:#3ecf8e44}
+  .badge.err{color:var(--err);border-color:#ff6b6b44}
+  .layout{display:grid;grid-template-columns:minmax(380px,1fr) minmax(420px,1.15fr);gap:20px;align-items:start}
+  @media(max-width:1000px){.layout{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+  .card h2{font-size:14px;margin:0 0 14px;font-weight:600;color:var(--text);
+    display:flex;align-items:center;gap:8px}
+  .card h2 .n{width:20px;height:20px;border-radius:6px;background:var(--accent-soft);
+    color:var(--accent);font-size:11px;display:grid;place-items:center;font-weight:700}
+  label{display:block;font-size:12px;color:var(--muted);margin:14px 0 6px}
+  label:first-of-type{margin-top:0}
+  input[type=text],input[type=number],select,textarea{width:100%;background:var(--panel-2);
+    color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px}
+  textarea{resize:vertical;min-height:96px;line-height:1.7}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:10px}.row>*{flex:1}
+  .drop{border:1.5px dashed var(--line);border-radius:10px;padding:16px;text-align:center;
+    cursor:pointer;transition:.15s;background:var(--panel-2)}
+  .drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+  .drop .hint{font-size:12px;color:var(--muted);margin-top:4px}
+  .drop img{max-height:140px;border-radius:8px;margin-top:8px}
+  .drop.filled{border-style:solid;border-color:#3ecf8e55}
+  .tabs{display:flex;gap:6px;background:var(--panel-2);padding:4px;border-radius:9px;margin-bottom:12px}
+  .tabs button{flex:1;background:transparent;border:0;color:var(--muted);padding:7px;border-radius:6px;
+    cursor:pointer;font:inherit;font-size:13px}
+  .tabs button.on{background:var(--accent);color:#fff;font-weight:600}
+  button.primary{width:100%;margin-top:18px;padding:12px;border:0;border-radius:9px;background:var(--accent);
+    color:#fff;font:inherit;font-size:14px;font-weight:650;cursor:pointer}
+  button.primary:hover{filter:brightness(1.08)}
+  button.primary:disabled{opacity:.5;cursor:not-allowed}
+  button.ghost{background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+    padding:6px 11px;border-radius:7px;cursor:pointer;font:inherit;font-size:12px}
+  button.ghost:hover{color:var(--text);border-color:var(--accent)}
+  .counter{float:right;font-size:11px;color:var(--muted)}
+  .counter.over{color:var(--err)}
+  .note{font-size:12px;color:var(--muted);background:var(--panel-2);border-left:2px solid var(--accent);
+    padding:8px 11px;border-radius:0 7px 7px 0;margin-top:12px}
+  .jobs{display:flex;flex-direction:column;gap:12px}
+  .job{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px}
+  .job.active{border-color:#4f8cff55}
+  .job .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .job .name{font-weight:600;font-size:13.5px}
+  .job .meta{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .st{font-size:11px;padding:3px 9px;border-radius:99px;white-space:nowrap;
+    background:var(--panel-2);border:1px solid var(--line);color:var(--muted)}
+  .st.run{color:var(--accent);border-color:#4f8cff55}
+  .st.done{color:var(--ok);border-color:#3ecf8e55}
+  .st.fail{color:var(--err);border-color:#ff6b6b55}
+  .bar{height:5px;background:var(--panel-2);border-radius:99px;overflow:hidden;margin:11px 0 8px}
+  .bar i{display:block;height:100%;background:var(--accent);transition:width .4s ease;border-radius:99px}
+  .bar i.done{background:var(--ok)}.bar i.fail{background:var(--err)}
+  .bar i.run{background:linear-gradient(90deg,var(--accent),#7aa9ff);
+    background-size:200% 100%;animation:flow 1.6s linear infinite}
+  @keyframes flow{to{background-position:-200% 0}}
+  video{width:100%;border-radius:9px;margin-top:10px;background:#000}
+  .logs{background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-top:10px;
+    font:11.5px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);
+    max-height:150px;overflow-y:auto;white-space:pre-wrap}
+  .err-box{background:#ff6b6b14;border:1px solid #ff6b6b44;color:#ffb3b3;border-radius:8px;
+    padding:9px 11px;margin-top:10px;font-size:12.5px;white-space:pre-wrap}
+  .empty{text-align:center;color:var(--muted);padding:44px 20px;font-size:13px}
+  .acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);
+    border:1px solid var(--line);padding:11px 18px;border-radius:9px;font-size:13px;z-index:99;
+    box-shadow:0 8px 32px #0008;max-width:90vw}
+  .toast.err{border-color:#ff6b6b66;color:#ffb3b3}
+  .toast.ok{border-color:#3ecf8e66;color:#a8f0cd}
+  .sec-title{font-size:12px;color:var(--muted);margin:20px 0 10px;display:flex;justify-content:space-between}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>可灵数字人控制台</h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="badge" id="auth">检查鉴权…</span>
+      <span class="badge" id="queue"></span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- ============ 左：表单 ============ -->
+    <div>
+      <div class="card">
+        <h2><span class="n">1</span>角色图</h2>
+        <div class="drop" id="imgDrop">
+          <div id="imgText">点击或拖入图片</div>
+          <div class="hint">jpg / png，≤10MB，宽高 ≥300px，比例 1:2.5 ~ 2.5:1</div>
+          <img id="imgPrev" style="display:none">
+        </div>
+        <input type="file" id="imgFile" accept=".jpg,.jpeg,.png" style="display:none">
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2><span class="n">2</span>配音</h2>
+        <div class="tabs">
+          <button class="on" data-tab="tts">台词转配音（TTS）</button>
+          <button data-tab="upload">上传音频</button>
+        </div>
+
+        <div id="tabTts">
+          <label>台词 <span class="counter" id="scriptCount">0 / 1000</span></label>
+          <textarea id="script" placeholder="把要念的台词粘贴进来，系统会自动合成配音。&#10;提示：想要开场静默，可在上传音频方案里于开头留白；TTS 方案请直接从第一句开始。"></textarea>
+          <div class="row" style="margin-top:10px">
+            <div>
+              <label>音色</label>
+              <select id="voice"></select>
+            </div>
+            <div style="max-width:110px">
+              <label>语速</label>
+              <input type="number" id="speed" value="1.0" min="0.8" max="2.0" step="0.1">
+            </div>
+          </div>
+          <div class="acts">
+            <button class="ghost" id="previewBtn">试听前 60 字</button>
+            <span id="previewWrap"></span>
+          </div>
+        </div>
+
+        <div id="tabUpload" style="display:none">
+          <div class="drop" id="audDrop">
+            <div id="audText">点击或拖入音频</div>
+            <div class="hint">mp3 / wav / m4a / aac，≤5MB</div>
+          </div>
+          <input type="file" id="audFile" accept=".mp3,.wav,.m4a,.aac" style="display:none">
+          <div class="note">视频时长 = 音频时长。要「开场静默 5 秒」就在音频开头留 5 秒静音，比写进提示词可靠。</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2><span class="n">3</span>提示词与参数</h2>
+        <label>从模板载入</label>
+        <select id="tpl"><option value="">— 选择模板 —</option></select>
+
+        <label style="margin-top:14px">提示词 <span class="counter" id="promptCount">0 / 2500</span></label>
+        <textarea id="prompt" placeholder="只写「怎么演」：镜头、动作幅度、情绪、禁止事项。台词不要写进这里。"></textarea>
+
+        <div class="row" style="margin-top:14px">
+          <div>
+            <label>生成模式</label>
+            <select id="mode">
+              <option value="std">std 标准（省）</option>
+              <option value="pro">pro 专家（质量更高）</option>
+            </select>
+          </div>
+          <div>
+            <label>抖动后处理</label>
+            <select id="stab">
+              <option value="">不处理</option>
+              <option value="track">track（推荐）</option>
+              <option value="track,deflicker">track + deflicker</option>
+              <option value="vidstab">vidstab</option>
+              <option value="interp">interp 插帧</option>
+            </select>
+          </div>
+        </div>
+
+        <label style="margin-top:14px">任务备注（可选）</label>
+        <input type="text" id="title" placeholder="例如：用电安全-推荐提示词-pro">
+
+        <button class="primary" id="submit">提交生成任务</button>
+      </div>
+    </div>
+
+    <!-- ============ 右：任务 ============ -->
+    <div>
+      <div class="sec-title">
+        <span>任务列表（自动刷新）</span>
+        <button class="ghost" id="refresh">立即刷新</button>
+      </div>
+      <div class="jobs" id="jobs"><div class="empty">还没有任务，从左侧提交第一个吧</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let META = null, imgSelected = null, audSelected = null, tab = 'tts';
+
+function toast(msg, kind='') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind; el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), kind === 'err' ? 6000 : 3000);
+}
+
+// ---------- 拖拽上传 ----------
+function bindDrop(dropId, inputId, onPick) {
+  const drop = $(dropId), input = $(inputId);
+  drop.onclick = () => input.click();
+  input.onchange = () => input.files[0] && onPick(input.files[0]);
+  ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {
+    ev.preventDefault(); drop.classList.add('over');
+  }));
+  ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {
+    ev.preventDefault(); drop.classList.remove('over');
+  }));
+  drop.addEventListener('drop', ev => {
+    const f = ev.dataTransfer.files[0];
+    if (f) { input.files = ev.dataTransfer.files; onPick(f); }
+  });
+}
+
+bindDrop('#imgDrop', '#imgFile', f => {
+  imgSelected = f;
+  $('#imgText').textContent = f.name + '  ·  ' + (f.size/1048576).toFixed(1) + 'MB';
+  $('#imgDrop').classList.add('filled');
+  const prev = $('#imgPrev');
+  prev.src = URL.createObjectURL(f); prev.style.display = 'inline-block';
+});
+
+bindDrop('#audDrop', '#audFile', f => {
+  audSelected = f;
+  $('#audText').textContent = f.name + '  ·  ' + (f.size/1048576).toFixed(1) + 'MB';
+  $('#audDrop').classList.add('filled');
+});
+
+// ---------- tab 切换 ----------
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  tab = b.dataset.tab;
+  $('#tabTts').style.display = tab === 'tts' ? '' : 'none';
+  $('#tabUpload').style.display = tab === 'upload' ? '' : 'none';
+});
+
+// ---------- 字数统计 ----------
+function counter(inputSel, countSel, max) {
+  const el = $(inputSel), out = $(countSel);
+  const upd = () => {
+    const n = el.value.length;
+    out.textContent = n + ' / ' + max;
+    out.classList.toggle('over', n > max);
+  };
+  el.oninput = upd; upd();
+}
+
+// ---------- 初始化 ----------
+async function init() {
+  const r = await fetch('/api/meta');
+  META = await r.json();
+
+  const auth = $('#auth');
+  if (META.auth_ok) {
+    auth.textContent = '✓ ' + META.auth_mode;
+    auth.className = 'badge ok';
+  } else {
+    auth.textContent = '✕ 鉴权未配置';
+    auth.className = 'badge err';
+    toast(META.auth_error, 'err');
+  }
+
+  $('#voice').innerHTML = META.voices
+    .map(v => `<option value="${v.id}" data-lang="${v.language}">${v.label} · ${v.id}</option>`).join('');
+
+  $('#tpl').innerHTML = '<option value="">— 选择模板 —</option>' + META.templates
+    .map((t,i) => `<option value="${i}">${t.name}（${t.chars} 字${t.is_script ? '，台词稿' : ''}）</option>`).join('');
+  $('#tpl').onchange = e => {
+    const t = META.templates[e.target.value];
+    if (!t) return;
+    if (t.is_script) {
+      $('#script').value = t.text;
+      $('#script').oninput();
+      toast('已载入到台词框（这是台词稿，不是提示词）', 'ok');
+    } else {
+      $('#prompt').value = t.text;
+      $('#prompt').oninput();
+      toast('已载入提示词', 'ok');
+    }
+  };
+
+  counter('#script', '#scriptCount', META.limits.tts_max);
+  counter('#prompt', '#promptCount', META.limits.prompt_max);
+}
+
+// ---------- 试听 ----------
+$('#previewBtn').onclick = async () => {
+  const text = $('#script').value.trim();
+  if (!text) return toast('先写点台词', 'err');
+  const btn = $('#previewBtn');
+  btn.disabled = true; btn.textContent = '合成中…';
+  try {
+    const fd = new FormData();
+    fd.append('text', text);
+    fd.append('voice', $('#voice').value);
+    fd.append('voice_language', $('#voice').selectedOptions[0].dataset.lang);
+    fd.append('voice_speed', $('#speed').value);
+    const r = await fetch('/api/tts-preview', {method:'POST', body:fd});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '试听失败');
+    $('#previewWrap').innerHTML = `<audio controls autoplay src="${d.url}" style="height:32px;vertical-align:middle"></audio>`;
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '试听前 60 字';
+  }
+};
+
+// ---------- 提交 ----------
+$('#submit').onclick = async () => {
+  if (!imgSelected) return toast('请先选角色图', 'err');
+  if (tab === 'tts' && !$('#script').value.trim()) return toast('请填写台词，或切到「上传音频」', 'err');
+  if (tab === 'upload' && !audSelected) return toast('请选择音频文件', 'err');
+
+  const fd = new FormData();
+  fd.append('image', imgSelected);
+  if (tab === 'upload') fd.append('audio', audSelected);
+  else {
+    fd.append('script', $('#script').value.trim());
+    fd.append('voice', $('#voice').value);
+    fd.append('voice_language', $('#voice').selectedOptions[0].dataset.lang);
+    fd.append('voice_speed', $('#speed').value);
+  }
+  fd.append('prompt', $('#prompt').value.trim());
+  fd.append('mode', $('#mode').value);
+  fd.append('stabilize', $('#stab').value);
+  fd.append('title', $('#title').value);
+
+  const btn = $('#submit');
+  btn.disabled = true; btn.textContent = '提交中…';
+  try {
+    const r = await fetch('/api/jobs', {method:'POST', body:fd});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '提交失败');
+    toast('任务已提交，开始生成', 'ok');
+    refresh();
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '提交生成任务';
+  }
+};
+
+// ---------- 任务列表 ----------
+const RUNNING = ['queued','tts','submitting','generating','downloading','stabilizing'];
+
+function fmtTime(sec) {
+  const m = Math.floor(sec/60), s = sec%60;
+  return m ? `${m}分${s}秒` : `${s}秒`;
+}
+
+function renderJob(j) {
+  const running = RUNNING.includes(j.stage);
+  const cls = j.stage === 'done' ? 'done' : j.stage === 'failed' ? 'fail' : 'run';
+  const src = j.audio_source === 'tts' ? 'TTS 配音' : '上传音频';
+  const bits = [src, j.mode];
+  if (j.audio_duration) bits.push(`音频 ${(+j.audio_duration).toFixed(1)}s`);
+  if (j.video_duration) bits.push(`视频 ${j.video_duration}s`);
+  if (j.size_mb) bits.push(`${j.size_mb}MB`);
+  if (j.stabilize) bits.push(`后处理 ${j.stabilize}`);
+
+  return `<div class="job ${running ? 'active' : ''}">
+    <div class="top">
+      <div>
+        <div class="name">${esc(j.title)}</div>
+        <div class="meta">${bits.join(' · ')} · 已耗时 ${fmtTime(j.elapsed)}</div>
+      </div>
+      <span class="st ${cls}">${esc(j.stage_label)}</span>
+    </div>
+    <div class="bar"><i class="${running ? 'run' : cls}" style="width:${j.percent}%"></i></div>
+    ${j.error ? `<div class="err-box">${esc(j.error)}</div>` : ''}
+    ${j.output_file && j.stage === 'done'
+      ? `<video controls preload="metadata" src="/outputs/${j.output_file}"></video>` : ''}
+    <div class="acts">
+      ${j.output_file && j.stage === 'done'
+        ? `<a class="ghost" style="text-decoration:none" href="/api/download/${j.output_file}">下载成片</a>` : ''}
+      ${j.raw_file ? `<a class="ghost" style="text-decoration:none" href="/api/download/${j.raw_file}">下载后处理前原片</a>` : ''}
+      ${j.audio_preview ? `<a class="ghost" style="text-decoration:none" href="${j.audio_preview}" target="_blank">听配音</a>` : ''}
+      <button class="ghost" onclick="toggleLogs('${j.id}')">日志</button>
+      ${!running ? `<button class="ghost" onclick="delJob('${j.id}')">删除</button>` : ''}
+    </div>
+    <div class="logs" id="log-${j.id}" style="display:none">${esc((j.logs||[]).join('\n'))}</div>
+  </div>`;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+const openLogs = new Set();
+function toggleLogs(id) {
+  const el = $('#log-' + id);
+  const show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  show ? openLogs.add(id) : openLogs.delete(id);
+}
+function delJob(id) {
+  if (!confirm('删除该任务及其文件？')) return;
+  fetch('/api/jobs/' + id, {method:'DELETE'}).then(async r => {
+    if (!r.ok) { const d = await r.json(); return toast(d.detail || '删除失败', 'err'); }
+    refresh();
+  });
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/jobs');
+    const d = await r.json();
+    $('#queue').textContent = d.queue_size ? `队列 ${d.queue_size}` : '空闲';
+    const box = $('#jobs');
+    box.innerHTML = d.jobs.length
+      ? d.jobs.map(renderJob).join('')
+      : '<div class="empty">还没有任务，从左侧提交第一个吧</div>';
+    openLogs.forEach(id => { const el = $('#log-' + id); if (el) el.style.display = 'block'; });
+  } catch (e) { /* 服务重启时静默跳过，下一轮自动恢复 */ }
+}
+
+init();
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

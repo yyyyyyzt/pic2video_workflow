@@ -1,6 +1,10 @@
 .env
 __pycache__/
 *.pyc
+
+# Web 控制台的运行数据（上传素材、成片、任务状态）
+data/
+
 *.mp4
 *.mp3
 *.wav
