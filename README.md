@@ -106,8 +106,14 @@ python3 stabilize.py result.mp4 --method analyze
    2. 第    71 帧  t =   2.37s   加速度  8.389
 ```
 
-看**尖峰比**判断走向：≥8 说明确有孤立顿挫，用 `track`；<4 说明运动本身平顺，
-你感到的卡可能只是帧率观感，用 `interp`。
+它会自动区分两种性质完全不同的抖动，并**直接打印出该跑的命令**（含按实测尖峰幅度算出的
+`--max-shift`）：
+
+- **孤立突跳**：只有极少数帧异常，其余本来就平顺。常表现为加速度上相邻两帧同时超标，
+  即「跳出去又跳回来」的单帧位置突跳。→ 用**中值滤波**精准打击。
+- **持续性抖动**：异常不集中、全程都在轻微晃。→ 用**高斯低通**。
+
+这个区分很关键：孤立突跳用高斯会把整段视频的自然微动一起抹平，人物看起来会发僵。
 
 ### 第二步：按方法逐个试
 
@@ -131,7 +137,7 @@ python3 stabilize.py result.mp4 -o fixed_chain.mp4 --method track,deflicker
 python3 stabilize.py result.mp4 -o fixed.mp4 --method track --compare compare.mp4
 ```
 
-在一段人为注入 5 次位置跳变的 180 帧测试视频上的**实测数据**（加速度越小越稳）：
+**实测一：持续性抖动**（180 帧，全程注入抖动 + 5 次跳变）
 
 | 方法 | 中位数 | p95 | p99 | 最大 | 结论 |
 | :-- | --: | --: | --: | --: | :-- |
@@ -142,16 +148,39 @@ python3 stabilize.py result.mp4 -o fixed.mp4 --method track --compare compare.mp
 | interp | 0.037 | 0.298 | 3.925 | 4.231 | 观感变顺，尖峰仍在 |
 | track,deflicker | 0.052 | 0.168 | 0.394 | 0.924 | 与 track 相当 |
 
+**实测二：孤立突跳**（900 帧竖屏，98.9% 帧平顺 + 5 处成对突跳，最贴近真实数字人输出）
+
+| 方案 | 中位数 | p95 | p99 | 最大 | 残余尖峰 |
+| :-- | --: | --: | --: | --: | --: |
+| 原始 | 0.234 | 0.761 | 7.503 | 19.067 | 5 处 |
+| **median r5 --max-shift 28** | 0.201 | 0.743 | 0.999 | 1.666 | **0 处** |
+| hybrid r3 --max-shift 28 | 0.067 | 0.208 | 0.290 | 0.434 | 0 处 |
+| gaussian r15 --max-shift 12 | 0.054 | 0.190 | 0.419 | 7.099 | **5 处（没修掉）** |
+| gaussian r15 --max-shift 28 | 0.056 | 0.182 | 0.241 | 0.715 | 1 处 |
+
+两个要点：
+
+1. **`--max-shift` 不够大会白干**。上表里 `--max-shift 12` 那行，5 处尖峰一个都没消除——
+   因为消除它们需要约 19px 的补偿，被限幅削掉了。`analyze` 会算出你的视频需要多少并直接建议。
+2. **median 保住了自然感**。它把最大尖峰降了 91% 而中位数只从 0.234 降到 0.201（自然微动保留约 86%）；
+   gaussian 虽然数字更漂亮，但中位数被压到 0.054，等于把人物的自然微动也抹掉了。
+
 ### 第三步：track 效果不理想时调参
 
 ```bash
-# 抖动仍在 → 加大平滑窗口（默认 15 帧）
-python3 stabilize.py result.mp4 -o fixed.mp4 --method track --radius 30
+# 尖峰没消尽（运行时提示「补偿被 --max-shift 限制」）→ 放宽限幅
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --max-shift 40
 
-# 人物真实动作被削平、显得发僵 → 减小窗口
-python3 stabilize.py result.mp4 -o fixed.mp4 --method track --radius 8
+# 还能看出残留 → 从 median 升到 hybrid（中值去脉冲 + 轻度高斯收尾）
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --smooth-mode hybrid --radius 3
 
-# 只想修上下左右位移，不动缩放和旋转（最保守，画面最不易变形）
+# 全程都在轻微晃（不是孤立突跳）→ 换高斯低通并加大窗口
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --smooth-mode gaussian --radius 20
+
+# 人物动作被削平、显得发僵 → 回到 median 或减小窗口
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --smooth-mode median --radius 5
+
+# 只修上下左右位移，不动缩放和旋转（最保守，画面最不易变形）
 python3 stabilize.py result.mp4 -o fixed.mp4 --method track --lock-scale --lock-rotation
 
 # 只用人物所在区域估计运动（背景很杂或有动态背景时更准）
@@ -166,9 +195,10 @@ python3 stabilize.py result.mp4 -o fixed.mp4 --method track --zoom 1.04
 
 | 参数 | 默认 | 说明 |
 | :-- | :-- | :-- |
-| `--radius` | 15 | 平滑窗口半径（帧）。越大越稳，但真实运动也越被削弱 |
+| `--smooth-mode` | `median` | `median` 只去孤立突跳（保自然感）/ `hybrid` 中值+轻度高斯 / `gaussian`、`box` 传统低通 |
+| `--radius` | 15 | 平滑窗口半径（帧）。median 对它不敏感；gaussian 越大越稳但真实运动越被削弱 |
+| `--max-shift` | 30 | 单帧最大补偿位移（像素），`0` 为不限制。**太小会让大尖峰修不掉** |
 | `--roi` | `full` | 运动**估计**区域：`full` / `upper` / `center` / `x,y,w,h`。补偿始终作用于整帧 |
-| `--max-shift` | 12 | 单帧最大补偿位移（像素），防止过冲；`0` 为不限制 |
 | `--zoom` | 1.02 | 轻微放大以裁掉补偿产生的边缘 |
 | `--lock-scale` / `--lock-rotation` | 关 | 只修平移，最保守 |
 | `--crf` | 17 | 输出质量，17 约等于视觉无损 |
@@ -187,7 +217,11 @@ python3 kling_avatar.py --image face.jpg --audio speech_60s.mp3 \
 
 - `track` 的补偿是**整帧**的，所以口型、表情等局部形变完全不受影响——这是它比通用稳像更适合口播的原因；
 - 代价是：若背景本来完全静止，补偿会让背景反向轻移。补偿量通常只有几像素，实际难以察觉，但如果背景有明显直线（门框、书架）可以改用 `--lock-scale --lock-rotation` 降低可感知度；
-- 后处理救不了**内容级崩坏**（变脸、手指错乱、明显跳变）。那种情况请回到提示词与参考图，重新生成更划算。
+- 后处理救不了**内容级崩坏**（变脸、手指错乱、明显跳变）。那种情况请回到提示词与参考图，重新生成更划算；
+- **孤立突跳靠改提示词解决不了**。如果 `analyze` 显示整体运动平顺（p95 很小）、只有几处尖峰，
+  说明动作幅度本来就没问题，突跳更像模型在长视频内部的时序衔接处产生的，提示词管不到这一层。
+  长视频重抽成本高、且尖峰位置随机，不保证变少——优先用后处理修。
+  「锁镜头 + 小动作」的提示词更适合用作**新项目的预防**，而不是为这个问题返工重抽。
 
 ## 底层接口（脚本封装的内容）
 

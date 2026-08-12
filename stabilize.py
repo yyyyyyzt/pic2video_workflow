@@ -231,16 +231,56 @@ def cmd_analyze(path: str, roi_spec: str, top: int) -> None:
     print("抖动加速度（像素/帧²）中位数 %.3f   p95 %.3f   p99 %.3f   最大 %.3f"
           % (m["accel_p50"], m["accel_p95"], m["accel_p99"], m["accel_max"]))
 
+    accel = m["_accel"]
     ratio = m["accel_p99"] / max(m["accel_p50"], 1e-6)
     print(f"\n尖峰比（p99/中位数）= {ratio:.1f}")
-    if ratio >= 8:
-        print("  → 存在明显孤立尖峰，正是你说的「偶尔顿一下」。建议 --method track")
-    elif ratio >= 4:
-        print("  → 有轻度尖峰，track 平滑一般够用")
-    else:
-        print("  → 运动比较平顺；若仍觉得卡，多半是帧率观感问题，试 --method interp")
 
-    accel = m["_accel"]
+    # 用 MAD 定阈值：对重尾分布比标准差稳健得多
+    mad = float(np.median(np.abs(accel - np.median(accel)))) or 1e-6
+    threshold = float(np.median(accel)) + 8.0 * 1.4826 * mad
+    spikes = np.flatnonzero(accel > max(threshold, m["accel_p50"] * 4))
+    spike_ratio = len(spikes) / len(accel) * 100
+
+    # 突跳往往是「跳出去 + 跳回来」，在加速度上表现为相邻两帧同时超阈值
+    groups: list[list[int]] = []
+    for idx in spikes.tolist():
+        if groups and idx - groups[-1][-1] <= 2:
+            groups[-1].append(idx)
+        else:
+            groups.append([idx])
+    paired = sum(1 for g in groups if len(g) >= 2)
+
+    print(f"超阈值帧 {len(spikes)} / {len(accel)}（{spike_ratio:.2f}%），聚成 {len(groups)} 处事件，"
+          f"其中 {paired} 处为相邻成对")
+
+    # 估计消除这些尖峰实际需要多大补偿位移，用来推荐 --max-shift
+    traj = np.cumsum(deltas, axis=0)
+    need = float(np.hypot(*(median_filter(traj, 5) - traj).T[:2]).max())
+    suggest_shift = max(6, int(np.ceil(need * 1.4)))
+
+    isolated = len(groups) > 0 and spike_ratio < 2.0
+    print()
+    if isolated:
+        print(f"判定：**孤立突跳**（仅 {spike_ratio:.2f}% 的帧异常，其余 {100 - spike_ratio:.1f}% 本来就平顺）")
+        if paired:
+            print(f"      {paired} 处成对出现 → 典型的「跳出去又跳回来」的单帧位置突跳")
+        print("      → 用中值滤波精准打击，不要用高斯（会把整段的自然微动一起抹平）")
+        print(f"\n  推荐命令：\n    python3 stabilize.py <输入> -o fixed.mp4 --method track \\\n"
+              f"        --smooth-mode median --radius 5 --max-shift {suggest_shift}")
+        print(f"\n  若处理后还能看出残留，再收紧一档：\n"
+              f"    python3 stabilize.py <输入> -o fixed.mp4 --method track \\\n"
+              f"        --smooth-mode hybrid --radius 3 --max-shift {suggest_shift}")
+    elif ratio >= 4:
+        print("判定：**持续性抖动**（异常不集中）→ 适合高斯低通")
+        print(f"\n  推荐命令：\n    python3 stabilize.py <输入> -o fixed.mp4 --method track \\\n"
+              f"        --smooth-mode gaussian --radius 15 --max-shift {suggest_shift}")
+    else:
+        print("判定：运动本身平顺，没有明显抖动源。")
+        print("      若仍觉得卡顿，多半是帧率观感问题 → python3 stabilize.py <输入> -o fixed.mp4 --method interp")
+
+    print(f"\n  （消除尖峰约需 {need:.1f}px 补偿，所以 --max-shift 建议 ≥ {suggest_shift}；"
+          f"默认 12 会把大尖峰削一半）")
+
     order = np.argsort(accel)[::-1][:top]
     print(f"\n最抖的 {top} 个时刻（按加速度排序，可直接跳到该秒逐帧看）：")
     for rank, idx in enumerate(sorted(order.tolist()), 1):
@@ -251,17 +291,31 @@ def cmd_analyze(path: str, roi_spec: str, top: int) -> None:
 # --------------------------------------------------------------------------- track
 
 
-def smooth_trajectory(traj: np.ndarray, radius: int, mode: str) -> np.ndarray:
-    """对累积轨迹做低通滤波，保留缓慢的真实运动，压掉高频抖动。"""
+def median_filter(traj: np.ndarray, radius: int) -> np.ndarray:
+    """滑动中值：专门对付孤立的单帧突跳。
+
+    中值对脉冲免疫——窗口里只要多数帧正常，突跳那一帧就被直接替换掉，而缓慢的
+    真实运动（多数帧的共识）被原样保留。这是它比高斯更适合「偶尔顿一下」的原因。
+    """
     if radius < 1:
         return traj.copy()
-    size = radius * 2 + 1
+    out = np.empty_like(traj)
+    for c in range(traj.shape[1]):
+        padded = np.pad(traj[:, c], (radius, radius), mode="edge")
+        windows = np.lib.stride_tricks.sliding_window_view(padded, radius * 2 + 1)
+        out[:, c] = np.median(windows, axis=-1)
+    return out
+
+
+def convolve_filter(traj: np.ndarray, radius: int, mode: str) -> np.ndarray:
+    """高斯 / 均值低通：压掉持续性高频抖动，代价是自然微动也会被削弱。"""
+    if radius < 1:
+        return traj.copy()
     if mode == "gaussian":
-        sigma = radius / 2.0
         offsets = np.arange(-radius, radius + 1)
-        kernel = np.exp(-(offsets ** 2) / (2 * sigma ** 2))
+        kernel = np.exp(-(offsets ** 2) / (2 * (radius / 2.0) ** 2))
     else:
-        kernel = np.ones(size)
+        kernel = np.ones(radius * 2 + 1)
     kernel /= kernel.sum()
 
     out = np.empty_like(traj)
@@ -269,6 +323,20 @@ def smooth_trajectory(traj: np.ndarray, radius: int, mode: str) -> np.ndarray:
         padded = np.pad(traj[:, c], (radius, radius), mode="edge")
         out[:, c] = np.convolve(padded, kernel, mode="valid")
     return out
+
+
+def smooth_trajectory(traj: np.ndarray, radius: int, mode: str, despike_radius: int = 5) -> np.ndarray:
+    """按模式平滑累积轨迹。
+
+    median  只去孤立突跳，最大程度保留自然微动（推荐用于「偶尔顿一下」）
+    hybrid  先中值去脉冲，再轻度高斯收尾（尖峰清得更干净，微动损失居中）
+    gaussian/box  传统低通，适合持续性抖动
+    """
+    if mode == "median":
+        return median_filter(traj, radius)
+    if mode == "hybrid":
+        return convolve_filter(median_filter(traj, despike_radius), radius, "gaussian")
+    return convolve_filter(traj, radius, mode)
 
 
 def stabilize_track(
@@ -282,12 +350,13 @@ def stabilize_track(
     lock_scale: bool,
     lock_rotation: bool,
     crf: int = 17,
+    despike_radius: int = 5,
 ) -> None:
     deltas, meta = estimate_motion(src, roi_spec)
     before = jitter_metrics(deltas, meta["fps"])
 
     traj = np.cumsum(deltas, axis=0)
-    smoothed = smooth_trajectory(traj, radius, mode)
+    smoothed = smooth_trajectory(traj, radius, mode, despike_radius)
     correction = smoothed - traj  # 需要施加的补偿量
 
     limit = max_shift if max_shift > 0 else float("inf")
@@ -297,6 +366,8 @@ def stabilize_track(
         factor = limit / norm[over]
         correction[over, 0] *= factor
         correction[over, 1] *= factor
+        print(f"注意：{int(over.sum())} 帧的补偿被 --max-shift={max_shift:g} 限制"
+              f"（最大需要 {norm.max():.1f}px）；如尖峰未消尽请调高该值")
     if lock_rotation:
         correction[:, 2] = 0.0
     if lock_scale:
@@ -425,6 +496,7 @@ def apply_method(method: str, src: str, output: str, args: argparse.Namespace) -
         stabilize_track(
             src, output, args.roi, args.radius, args.smooth_mode,
             args.max_shift, args.zoom, args.lock_scale, args.lock_rotation, args.crf,
+            args.despike_radius,
         )
     elif method == "vidstab":
         stabilize_vidstab(src, output, args.shakiness, args.smoothing, args.zoom, args.crf)
@@ -450,8 +522,12 @@ def main() -> None:
     g = parser.add_argument_group("track 参数（推荐先调这个）")
     g.add_argument("--roi", default="full", help="运动估计区域：full / upper / center / x,y,w,h（比例或像素）")
     g.add_argument("--radius", type=int, default=15, help="平滑窗口半径（帧）。越大越稳但真实运动也会被削弱")
-    g.add_argument("--smooth-mode", choices=["gaussian", "box"], default="gaussian", help="平滑核")
-    g.add_argument("--max-shift", type=float, default=12.0, help="单帧最大补偿位移（像素），0=不限制")
+    g.add_argument("--smooth-mode", choices=["median", "hybrid", "gaussian", "box"], default="median",
+                   help="median=只去孤立突跳(推荐配 --radius 5) / hybrid=中值+轻度高斯 / "
+                        "gaussian,box=传统低通，适合持续性抖动")
+    g.add_argument("--despike-radius", type=int, default=5, help="hybrid 模式下中值去脉冲的窗口半径")
+    g.add_argument("--max-shift", type=float, default=30.0,
+                   help="单帧最大补偿位移（像素），0=不限制。太小会把大尖峰削掉一半")
     g.add_argument("--zoom", type=float, default=1.02, help="轻微放大以裁掉补偿产生的边缘（1.0=不放大）")
     g.add_argument("--lock-scale", action="store_true", help="不补偿缩放（只修平移/旋转）")
     g.add_argument("--lock-rotation", action="store_true", help="不补偿旋转")
