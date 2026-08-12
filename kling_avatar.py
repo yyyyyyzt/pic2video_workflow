@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -179,6 +180,9 @@ def main() -> None:
     parser.add_argument("--output", default="avatar_output.mp4", help="输出视频路径")
     parser.add_argument("--poll-interval", type=int, default=15, help="轮询间隔（秒）")
     parser.add_argument("--timeout", type=int, default=3600, help="等待超时（秒）；60 秒素材通常需要十几分钟")
+    parser.add_argument("--stabilize", nargs="?", const="track", default=None,
+                        help="生成后跑抖动后处理（需 opencv-python + ffmpeg）。可传 track/vidstab/deflicker/interp"
+                             "或逗号串联；不传值等于 track。原始成片会保留为 *_raw.mp4")
     args = parser.parse_args()
 
     load_dotenv()
@@ -198,6 +202,23 @@ def main() -> None:
     task_id = create_task(base_url, headers, body)
     video_url = poll_task(base_url, token_factory, task_id, args.poll_interval, args.timeout)
     download(video_url, args.output)
+
+    if args.stabilize:
+        run_stabilize(args.output, args.stabilize)
+
+
+def run_stabilize(output: str, method: str) -> None:
+    """把成片改名为 *_raw.mp4，后处理结果写回原路径（原始文件始终留底）。"""
+    out = Path(output)
+    raw = out.with_name(f"{out.stem}_raw{out.suffix}")
+    out.replace(raw)
+    print(f"\n原始成片已保留为 {raw}")
+    print(f"运行后处理（method={method}）…")
+
+    cmd = [sys.executable, str(Path(__file__).with_name("stabilize.py")), str(raw), "-o", str(out), "--method", method]
+    if subprocess.run(cmd).returncode != 0:
+        raw.replace(out)  # 后处理失败就还原，不留下半成品
+        sys.exit("后处理失败，已还原原始成片。可单独调试：python3 stabilize.py <视频> --method analyze")
 
 
 if __name__ == "__main__":

@@ -64,12 +64,130 @@ python3 kling_avatar.py \
 **情绪戏 / 角色扮演**
 > 先平静叙述，说到中途忽然想起什么，轻微皱眉露出委屈的表情，随后叹气摇头
 
+**画面要稳（减少人物位置顿挫）**
+> 固定三脚架镜头，完全静止机位，无推拉摇移。人物端坐口播，躯干基本不动，只有口型、
+> 微表情和偶尔小幅手势，动作缓慢平滑，不要大幅度身体位移，背景保持稳定。
+
 写作技巧：
 
 1. **动词要具体**：「摇头晃脑」「扶了一下眼镜」「双手合十」比「动作自然」更有效；
 2. **给情绪曲线**：「先……忽然……最后……」这类时序描述能带出表演层次；
 3. **控制镜头**：加「固定镜头」「镜头缓缓推进」可以约束运镜；
-4. **中英文都支持**，不超过 2500 字符。
+4. **求稳就压幅度**：少写大位移动词，配合 `--mode pro`，再用下面的后处理收尾；
+5. **中英文都支持**，不超过 2500 字符。
+
+## 后处理：消除「前后两帧人物位置顿一下」
+
+生成结果偶尔出现人物位置微跳，是模型的**时序微抖动**，提示词只能软约束、压不掉。
+`stabilize.py` 提供几种可独立测试的后处理方法，全部**保留原音轨、不改帧数**（音画不会漂移）。
+
+```bash
+pip install -r requirements.txt   # 需要 opencv-python-headless + numpy
+# 另需系统装 ffmpeg：apt install ffmpeg / brew install ffmpeg
+```
+
+### 第一步：先诊断，别急着修
+
+```bash
+python3 stabilize.py result.mp4 --method analyze
+```
+
+它不修改视频，只输出抖动指标，并列出**最抖的时刻**（可直接跳到那一秒逐帧看）：
+
+```
+帧间位移（像素/帧）  中位数 0.414   p95 7.549
+抖动加速度（像素/帧²）中位数 0.232   p95 7.131   p99 8.132   最大 8.389
+
+尖峰比（p99/中位数）= 35.1
+  → 存在明显孤立尖峰，正是你说的「偶尔顿一下」。建议 --method track
+
+最抖的 6 个时刻：
+   1. 第    37 帧  t =   1.23s   加速度  7.579
+   2. 第    71 帧  t =   2.37s   加速度  8.389
+```
+
+看**尖峰比**判断走向：≥8 说明确有孤立顿挫，用 `track`；<4 说明运动本身平顺，
+你感到的卡可能只是帧率观感，用 `interp`。
+
+### 第二步：按方法逐个试
+
+```bash
+# ★ 推荐：光流轨迹平滑 + 整帧仿射补偿（不影响口型与表情）
+python3 stabilize.py result.mp4 -o fixed_track.mp4 --method track
+
+# 通用稳像，强度更猛（可能把真实的头部动作也削掉）
+python3 stabilize.py result.mp4 -o fixed_vidstab.mp4 --method vidstab
+
+# 只治亮度闪烁，不治位移
+python3 stabilize.py result.mp4 -o fixed_deflicker.mp4 --method deflicker
+
+# 运动补偿插帧到 60fps：不消除抖动，但观感更顺
+python3 stabilize.py result.mp4 -o fixed_interp.mp4 --method interp
+
+# 串联：先稳位置再压闪烁
+python3 stabilize.py result.mp4 -o fixed_chain.mp4 --method track,deflicker
+
+# 生成左右并排对比视频，肉眼确认是否值得
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --compare compare.mp4
+```
+
+在一段人为注入 5 次位置跳变的 180 帧测试视频上的**实测数据**（加速度越小越稳）：
+
+| 方法 | 中位数 | p95 | p99 | 最大 | 结论 |
+| :-- | --: | --: | --: | --: | :-- |
+| 原始 | 0.232 | 7.131 | 8.132 | 8.389 | 基准 |
+| **track** | 0.052 | 0.187 | 0.411 | 0.960 | **p99 降 95%，最有效** |
+| vidstab | 0.326 | 1.702 | 2.511 | 3.264 | 有效但不如 track |
+| deflicker | 0.238 | 7.142 | 8.141 | 8.410 | 对位移几乎无作用（符合预期） |
+| interp | 0.037 | 0.298 | 3.925 | 4.231 | 观感变顺，尖峰仍在 |
+| track,deflicker | 0.052 | 0.168 | 0.394 | 0.924 | 与 track 相当 |
+
+### 第三步：track 效果不理想时调参
+
+```bash
+# 抖动仍在 → 加大平滑窗口（默认 15 帧）
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --radius 30
+
+# 人物真实动作被削平、显得发僵 → 减小窗口
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --radius 8
+
+# 只想修上下左右位移，不动缩放和旋转（最保守，画面最不易变形）
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --lock-scale --lock-rotation
+
+# 只用人物所在区域估计运动（背景很杂或有动态背景时更准）
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --roi upper
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --roi 0.25,0.05,0.5,0.7
+
+# 边缘出现拉伸/镜像痕迹 → 加大裁切；完全不想放大 → --zoom 1.0
+python3 stabilize.py result.mp4 -o fixed.mp4 --method track --zoom 1.04
+```
+
+主要参数：
+
+| 参数 | 默认 | 说明 |
+| :-- | :-- | :-- |
+| `--radius` | 15 | 平滑窗口半径（帧）。越大越稳，但真实运动也越被削弱 |
+| `--roi` | `full` | 运动**估计**区域：`full` / `upper` / `center` / `x,y,w,h`。补偿始终作用于整帧 |
+| `--max-shift` | 12 | 单帧最大补偿位移（像素），防止过冲；`0` 为不限制 |
+| `--zoom` | 1.02 | 轻微放大以裁掉补偿产生的边缘 |
+| `--lock-scale` / `--lock-rotation` | 关 | 只修平移，最保守 |
+| `--crf` | 17 | 输出质量，17 约等于视觉无损 |
+
+### 生成时顺手做掉
+
+```bash
+python3 kling_avatar.py --image face.jpg --audio speech_60s.mp3 \
+    --prompt "固定机位，人物端坐口播，躯干基本不动，动作缓慢平滑" \
+    --output result.mp4 --stabilize track
+```
+
+原始成片会保留为 `result_raw.mp4`，方便和处理后的版本对照；后处理失败会自动还原，不留半成品。
+
+### 需要知道的取舍
+
+- `track` 的补偿是**整帧**的，所以口型、表情等局部形变完全不受影响——这是它比通用稳像更适合口播的原因；
+- 代价是：若背景本来完全静止，补偿会让背景反向轻移。补偿量通常只有几像素，实际难以察觉，但如果背景有明显直线（门框、书架）可以改用 `--lock-scale --lock-rotation` 降低可感知度；
+- 后处理救不了**内容级崩坏**（变脸、手指错乱、明显跳变）。那种情况请回到提示词与参考图，重新生成更划算。
 
 ## 底层接口（脚本封装的内容）
 
