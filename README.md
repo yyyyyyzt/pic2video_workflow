@@ -268,6 +268,21 @@ python3 kling_avatar.py --image face.jpg --audio speech_60s.mp3 \
   长视频重抽成本高、且尖峰位置随机，不保证变少——优先用后处理修。
   「锁镜头 + 小动作」的提示词更适合用作**新项目的预防**，而不是为这个问题返工重抽。
 
+## 附：MiniMax H3 长视频串接（实验性）
+
+H3 单次最长 15 秒，`minimax_h3.py` 把长视频拆成多段串行生成再拼接，支持两种串接策略、
+断点续跑、成本估算与 `--dry-run` 预演。
+
+```bash
+python3 minimax_h3.py plan --total 70                       # 分段与成本估算（免费）
+python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
+    --image face.jpg --dry-run                              # 预演，不花钱
+```
+
+**要点**：H3 是"自己生成音频"，不是"用你的音频驱动口型"，所以做 70 秒口播定稿时，
+台词精确度与段间音色一致性都不如可灵数字人。完整的可行性分析、四种方案对比、
+成本表与分级测试命令见 **[MINIMAX_H3.md](MINIMAX_H3.md)**。
+
 ## 项目结构
 
 ```
@@ -276,7 +291,8 @@ kling_avatar.py  命令行入口
 server.py        FastAPI Web 控制台（任务队列 + 进度 + 持久化）
 web/index.html   前端单页（原生 JS，无构建步骤）
 stabilize.py     抖动后处理（诊断 + 多种方法）
-prompts/         可编辑提示词模板与台词稿
+minimax_h3.py    MiniMax H3 长视频串接（实验性，见 MINIMAX_H3.md）
+prompts/         可编辑提示词模板、台词稿与 H3 分镜示例
 data/            运行数据：uploads / outputs / jobs.json（已 gitignore）
 ```
 
