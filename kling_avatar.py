@@ -11,18 +11,21 @@
 API 文档: https://klingai.com/document-api/api/video/avatar
 接口:     POST /v1/videos/avatar/image2video
           GET  /v1/videos/avatar/image2video/{task_id}
-鉴权:     AccessKey + SecretKey 生成 JWT（HS256, 30 分钟有效），Authorization: Bearer <token>
+
+鉴权（二选一）：
+  1) 新版单 Key：KLING_API_KEY=api-key-kling-...  → Authorization: Bearer <key>
+  2) 旧版 AK/SK：KLING_ACCESS_KEY + KLING_SECRET_KEY → JWT(HS256) → Bearer <jwt>
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
-import mimetypes
 import os
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import jwt  # PyJWT
 import requests
@@ -50,11 +53,40 @@ def load_dotenv(path: str = ".env") -> None:
         os.environ.setdefault(key, value)
 
 
-def make_token(access_key: str, secret_key: str) -> str:
-    """按可灵官方规范生成 JWT：iss=AK, exp=now+30min, nbf=now-5s。"""
+def make_jwt(access_key: str, secret_key: str) -> str:
+    """旧版 AK/SK：按可灵规范生成 JWT（iss=AK, exp=now+30min, nbf=now-5s）。"""
     now = int(time.time())
     payload = {"iss": access_key, "exp": now + 1800, "nbf": now - 5}
     return jwt.encode(payload, secret_key, algorithm="HS256", headers={"alg": "HS256", "typ": "JWT"})
+
+
+def resolve_auth() -> tuple[str, Callable[[], str]]:
+    """返回 (鉴权模式说明, token_factory)。
+
+    优先使用 KLING_API_KEY（新版单 Key 直接 Bearer）。
+    若只有 AK/SK：两者相同时按单 Key 处理；不同时走 JWT。
+    """
+    api_key = os.environ.get("KLING_API_KEY", "").strip()
+    access_key = os.environ.get("KLING_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("KLING_SECRET_KEY", "").strip()
+
+    # 兼容：用户把同一个 api-key-kling-xxx 填进了 AK 和 SK
+    if not api_key and access_key and (not secret_key or secret_key == access_key):
+        api_key = access_key
+    if not api_key and secret_key.startswith("api-key-") and (not access_key or access_key == secret_key):
+        api_key = secret_key
+
+    if api_key:
+        return "api-key (Bearer 直传)", (lambda: api_key)
+
+    if access_key and secret_key:
+        return "ak/sk (JWT)", (lambda: make_jwt(access_key, secret_key))
+
+    sys.exit(
+        "错误：请配置鉴权信息（见 .env.example）\n"
+        "  新版单 Key：KLING_API_KEY=api-key-kling-...\n"
+        "  或旧版双钥：KLING_ACCESS_KEY + KLING_SECRET_KEY"
+    )
 
 
 def encode_media(source: str, kind: str) -> str:
@@ -84,13 +116,17 @@ def create_task(base_url: str, headers: dict, body: dict) -> str:
     resp = requests.post(base_url + CREATE_PATH, headers=headers, json=body, timeout=60)
     data = resp.json()
     if resp.status_code != 200 or data.get("code") != 0:
-        sys.exit(f"创建任务失败 (HTTP {resp.status_code}): code={data.get('code')} message={data.get('message')}")
+        sys.exit(
+            f"创建任务失败 (HTTP {resp.status_code}): code={data.get('code')} message={data.get('message')}\n"
+            "提示：若 message=access key not found，你拿到的多半是新版单 Key，"
+            "请把密钥填到 KLING_API_KEY（或让 AK==SK），不要用 JWT。"
+        )
     task_id = data["data"]["task_id"]
     print(f"任务已提交，task_id = {task_id}")
     return task_id
 
 
-def poll_task(base_url: str, token_factory, task_id: str, interval: int, timeout: int) -> str:
+def poll_task(base_url: str, token_factory: Callable[[], str], task_id: str, interval: int, timeout: int) -> str:
     """轮询直到 succeed，返回视频 URL。"""
     deadline = time.time() + timeout
     url = f"{base_url}{CREATE_PATH}/{task_id}"
@@ -146,11 +182,9 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv()
-    access_key = os.environ.get("KLING_ACCESS_KEY", "")
-    secret_key = os.environ.get("KLING_SECRET_KEY", "")
-    if not access_key or not secret_key:
-        sys.exit("错误：请在 .env 或环境变量中配置 KLING_ACCESS_KEY 和 KLING_SECRET_KEY（见 .env.example）")
+    auth_mode, token_factory = resolve_auth()
     base_url = os.environ.get("KLING_API_BASE", DEFAULT_BASE_URL).rstrip("/")
+    print(f"鉴权模式: {auth_mode} | 域名: {base_url}")
 
     body: dict = {"image": encode_media(args.image, "图片"), "mode": args.mode}
     if args.audio:
@@ -160,9 +194,7 @@ def main() -> None:
     if args.prompt:
         body["prompt"] = args.prompt
 
-    token_factory = lambda: make_token(access_key, secret_key)  # noqa: E731
     headers = {"Authorization": f"Bearer {token_factory()}", "Content-Type": "application/json"}
-
     task_id = create_task(base_url, headers, body)
     video_url = poll_task(base_url, token_factory, task_id, args.poll_interval, args.timeout)
     download(video_url, args.output)

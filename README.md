@@ -13,11 +13,13 @@
 # 1) 安装依赖（仅 requests + PyJWT 两个包）
 pip install -r requirements.txt
 
-# 2) 配置密钥（可灵控制台 → API Keys 获取 AccessKey/SecretKey）
-cp .env.example .env   # 填入 KLING_ACCESS_KEY / KLING_SECRET_KEY
+# 2) 配置密钥
+cp .env.example .env
+# 新版控制台拿到的是单个 api-key-kling-xxx → 填 KLING_API_KEY
+# 旧版才是 AccessKey + SecretKey 两把不同的钥匙 → 填 KLING_ACCESS_KEY / KLING_SECRET_KEY
 
 # 3) 一条命令生成 60 秒测试视频
-python kling_avatar.py \
+python3 kling_avatar.py \
     --image face.jpg \
     --audio speech_60s.mp3 \
     --prompt "耐心、温柔地讲解，保持微笑，偶尔用手势辅助说明，动作自然" \
@@ -77,11 +79,19 @@ POST {base}/v1/videos/avatar/image2video      # 创建任务
 GET  {base}/v1/videos/avatar/image2video/{id} # 查询任务（succeed 后含视频 URL）
 ```
 
-鉴权为 AccessKey/SecretKey 生成的 JWT（HS256，30 分钟有效期），放在 `Authorization: Bearer <token>` 头中。国内域名 `api-beijing.klingai.com`，海外 `api-singapore.klingai.com`，可通过 `.env` 中 `KLING_API_BASE` 切换。
+鉴权支持两种：
+
+1. **新版单 Key**（`KLING_API_KEY=api-key-kling-...`）：直接 `Authorization: Bearer <key>`；
+2. **旧版 AK/SK**：用 SecretKey 签 JWT（HS256，30 分钟），再 `Bearer <jwt>`。
+
+若把同一个 `api-key-kling-xxx` 同时填进 AK 和 SK，脚本会自动按单 Key 处理。
+
+国内域名 `api-beijing.klingai.com`，海外 `api-singapore.klingai.com`，通过 `.env` 中 `KLING_API_BASE` 切换。
 
 ## 常见问题
 
-- **401 鉴权失败**：确认 AK/SK 正确，且域名与账号所属区域匹配（国内/海外密钥不通用）；
+- **401 `access key not found`**：你拿到的多半是新版单 Key。请填 `KLING_API_KEY`（不要用 JWT）。连通性本身没问题，是鉴权模式选错了；
+- **401 / 区域不匹配**：国内密钥走 `api-beijing`，海外走 `api-singapore`，两边密钥不通用；
 - **音频被拒**：检查时长是否在 2~60 秒之间、文件是否 ≤5MB、格式是否为 mp3/wav/m4a/aac；
 - **图片被拒**：检查宽高 ≥300px、宽高比在 1:2.5~2.5:1 之间、是否 ≤10MB；Base64 不能带 `data:` 前缀（脚本已处理）；
 - **任务排队久**：高峰期 `submitted/processing` 状态可能持续较长，脚本默认等待 1 小时，可用 `--timeout` 调整。
