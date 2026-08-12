@@ -18,13 +18,22 @@ cp .env.example .env
 # 新版控制台拿到的是单个 api-key-kling-xxx → 填 KLING_API_KEY
 # 旧版才是 AccessKey + SecretKey 两把不同的钥匙 → 填 KLING_ACCESS_KEY / KLING_SECRET_KEY
 
-# 3) 一条命令生成 60 秒测试视频
+# 3) 一条命令生成测试视频（提示词建议用文件，方便反复改）
 python3 kling_avatar.py \
     --image face.jpg \
-    --audio speech_60s.mp3 \
-    --prompt "耐心、温柔地讲解，保持微笑，偶尔用手势辅助说明，动作自然" \
+    --audio speech.mp3 \
+    --prompt-file prompts/electricity_safety_recommended.txt \
     --mode std \
     --output result.mp4
+```
+
+提示词文件放在 `prompts/`，以 `#` 开头的行是注释会被忽略。先读 `prompts/_guide.txt` 了解哪些内容写进提示词有用、哪些没用。同一音频下可用推荐版 / 极简版 / 完整版做 A/B：
+
+```bash
+python3 kling_avatar.py --image face.jpg --audio speech.mp3 \
+    --prompt-file prompts/electricity_safety_ultrashort.txt -o result_short.mp4
+python3 kling_avatar.py --image face.jpg --audio speech.mp3 \
+    --prompt-file prompts/electricity_safety_full.txt -o result_full.mp4
 ```
 
 脚本会自动完成：本地文件转 Base64 → 提交任务 → 轮询状态 → 下载成片。60 秒素材通常十几分钟内完成。
@@ -36,7 +45,7 @@ python3 kling_avatar.py \
 | `--image` | 是 | 角色图，本地文件或 URL。jpg/jpeg/png，≤10MB，宽高 ≥300px，宽高比 1:2.5~2.5:1 |
 | `--audio` | 二选一 | 驱动音频，本地文件或 URL。mp3/wav/m4a/aac，≤5MB，**时长 2~60 秒**（口型跟随音频） |
 | `--audio-id` | 二选一 | 可灵 TTS 接口生成的音频 ID（30 天内有效） |
-| `--prompt` | 否 | 提示词，描述动作/情绪/镜头，≤2500 字符。不写也能生成，写了表演力更强 |
+| `--prompt` / `--prompt-file` | 否 | 提示词；文件版方便编辑测试（`#` 行是注释）。≤2500 字符。**台词不要写进提示词**，口型跟着音频走 |
 | `--mode` | 否 | `std` 标准模式（性价比高，默认）/ `pro` 专家模式（质量更高） |
 | `--output` | 否 | 输出路径，默认 `avatar_output.mp4` |
 

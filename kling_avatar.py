@@ -166,6 +166,27 @@ def download(url: str, output: str) -> None:
     print(f"已保存到 {output}（{size_mb:.1f}MB）")
 
 
+def load_prompt(path: str) -> str:
+    """从文本文件读取提示词。以 # 开头的整行视为注释；空行保留为段落分隔。"""
+    p = Path(path)
+    if not p.is_file():
+        sys.exit(f"错误：找不到提示词文件 {path}")
+    lines = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        lines.append(line.rstrip())
+    text = "\n".join(lines).strip()
+    # 连续空行压成单空行，避免注释删完后留出大片空白
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    if not text:
+        sys.exit(f"错误：提示词文件为空（或全是注释）: {path}")
+    if len(text) > 2500:
+        sys.exit(f"错误：提示词 {len(text)} 字符，超过可灵 2500 字符上限（文件: {path}）")
+    return text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="可灵数字人视频生成：角色图 + 音频(2~60s) + 提示词 → 视频",
@@ -176,6 +197,8 @@ def main() -> None:
     group.add_argument("--audio", help="驱动音频：本地文件(mp3/wav/m4a/aac, ≤5MB, 时长 2~60 秒) 或 URL")
     group.add_argument("--audio-id", help="可灵 TTS 接口生成的音频 ID（与 --audio 二选一）")
     parser.add_argument("--prompt", default="", help="提示词：描述动作、情绪、镜头等，≤2500 字符")
+    parser.add_argument("--prompt-file", help="从文本文件读取提示词（与 --prompt 二选一；方便编辑测试）。"
+                                            "文件里以 # 开头的行会被忽略")
     parser.add_argument("--mode", choices=["std", "pro"], default="std", help="std=标准(性价比) / pro=专家(质量更高)")
     parser.add_argument("--output", default="avatar_output.mp4", help="输出视频路径")
     parser.add_argument("--poll-interval", type=int, default=15, help="轮询间隔（秒）")
@@ -185,18 +208,24 @@ def main() -> None:
                              "或逗号串联；不传值等于 track。原始成片会保留为 *_raw.mp4")
     args = parser.parse_args()
 
+    if args.prompt and args.prompt_file:
+        sys.exit("错误：--prompt 与 --prompt-file 只能二选一")
+    prompt = load_prompt(args.prompt_file) if args.prompt_file else args.prompt
+
     load_dotenv()
     auth_mode, token_factory = resolve_auth()
     base_url = os.environ.get("KLING_API_BASE", DEFAULT_BASE_URL).rstrip("/")
     print(f"鉴权模式: {auth_mode} | 域名: {base_url}")
+    if prompt:
+        print(f"提示词: {len(prompt)} 字符")
 
     body: dict = {"image": encode_media(args.image, "图片"), "mode": args.mode}
     if args.audio:
         body["sound_file"] = encode_media(args.audio, "音频")
     else:
         body["audio_id"] = args.audio_id
-    if args.prompt:
-        body["prompt"] = args.prompt
+    if prompt:
+        body["prompt"] = prompt
 
     headers = {"Authorization": f"Bearer {token_factory()}", "Content-Type": "application/json"}
     task_id = create_task(base_url, headers, body)
