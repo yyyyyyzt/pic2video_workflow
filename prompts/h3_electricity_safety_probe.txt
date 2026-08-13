@@ -1,0 +1,37 @@
+# =============================================================================
+# H3 两段衔接小样（2×4 秒 / 约 4 元）—— 安全用电直播
+# =============================================================================
+# 用来对比 frame 链 vs reference 链：看衔接处跳不跳、第二段人还像不像。
+# 不要再手写 /tmp/sb2.txt，直接用本文件。
+#
+# 预演（0 元）：
+#   python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_probe.txt \
+#       --image face.png --mode frame --dry-run
+#
+# A. frame 链（画面连贯优先）：
+#   python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_probe.txt \
+#       --mode frame --image face.png --workdir data/h3_try_frame -o try_frame.mp4
+#
+# B. reference 链（身份一致优先）：
+#   python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_probe.txt \
+#       --mode reference --image face.png --carry-frame --transition 0.4 \
+#       --workdir data/h3_try_ref -o try_ref.mp4
+#
+# 输出路径请用 --output 或 -o，不要写成 -output。
+# =============================================================================
+
+## 4s | 开场问候
+固定机位，中景。纯白影棚背景，镜头完全静止。一位年轻女性讲解员，白衬衫、藏青色马甲、蓝白条纹领结、盘发，
+端庄站立，面向镜头浅笑。
+角色说话：「各位朋友，大家好！今天我们聊家庭安全用电。」
+语气亲切自信。用浅笑和口型表达，不要点头摇头。
+动作限制：头部正向镜头，颈部稳定，禁止大幅度点头、摇头、转头；本段不要点头。
+双手自然交握于小腹前，最多一次小幅度手指调整；禁止抬手、挥手、摊手。上半身基本静止。
+
+## 4s | 要点提醒
+固定机位，中景。同一位白衬衫藏青马甲、蓝白领结、盘发的女性讲解员，站姿与上一段结尾一致。
+纯白影棚背景，镜头完全静止。
+角色说话：「请记住：人走断电；手不干，绝不碰电。」
+语气转为关切笃定。用语气强调，不要点头，不要用手指计数。
+动作限制：头部正向镜头，颈部稳定，禁止大幅度点头、摇头、转头；本段不要点头。
+双手自然交握于小腹前，最多一次小幅度手指交叠；禁止抬手、挥手、摊手、比划。上半身基本静止。
