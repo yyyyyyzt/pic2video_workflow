@@ -1,7 +1,10 @@
 # 用 MiniMax H3 做 70 秒视频：可行性研究与方案
 
 > 结论基于 2026-08 的官方文档与开源模型卡实测核对。
-> 工具实现：[`minimax_h3.py`](minimax_h3.py)；分镜示例：[`prompts/h3_storyboard_example.txt`](prompts/h3_storyboard_example.txt)
+> 工具实现：[`minimax_h3.py`](minimax_h3.py)；分镜已写好，主题是**安全用电直播**：
+> [`prompts/h3_electricity_safety_single.txt`](prompts/h3_electricity_safety_single.txt)（4s）、
+> [`prompts/h3_electricity_safety_probe.txt`](prompts/h3_electricity_safety_probe.txt)（两段小样）、
+> [`prompts/h3_electricity_safety_70s.txt`](prompts/h3_electricity_safety_70s.txt)（全长 70s）
 
 ## 一句话结论
 
@@ -53,8 +56,8 @@ H3：你给文字 → 它同时生成画面和配音（音色由模型定、台�
 段 i 的 `first_frame` = 段 i-1 的末帧。
 
 ```bash
-python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
-    --mode frame --image face.jpg --resolution 768P -o h3_long.mp4
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt \
+    --mode frame --image face.png --resolution 768P -o h3_long.mp4
 ```
 
 - **优点**：衔接处画面天然连续（下一段的第一帧就是上一段的最后一帧），几乎看不到跳变
@@ -66,8 +69,8 @@ python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
 每段都传同一批 `reference_image`（角色图，可选加上一段末帧）。
 
 ```bash
-python3 minimax_h3.py chain --storyboard xxx.txt --mode reference \
-    --image face.jpg --carry-frame --transition 0.4 -o h3_long.mp4
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt --mode reference \
+    --image face.png --carry-frame --transition 0.4 -o h3_long.mp4
 ```
 
 - **优点**：身份锚点始终是原图，**不累积漂移**；`--carry-frame` 把上一段末帧也塞进参考图兼顾连贯
@@ -78,7 +81,7 @@ python3 minimax_h3.py chain --storyboard xxx.txt --mode reference \
 
 ```bash
 # 1) H3 只出画面，直接把它生成的音频换成你的配音
-python3 minimax_h3.py chain --storyboard xxx.txt --mode frame --image face.jpg \
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt --mode frame --image face.png \
     --audio replace --external-audio my_voice.mp3 -o h3_visual.mp4
 
 # 2) 再走一道对口型（可灵 advanced-lip-sync 支持 ≤60s，或本地 wav2lip）
@@ -110,7 +113,7 @@ python3 minimax_h3.py chain --storyboard xxx.txt --mode frame --image face.jpg \
 
 ```bash
 python3 minimax_h3.py plan --total 70
-python3 minimax_h3.py plan --storyboard prompts/h3_storyboard_example.txt
+python3 minimax_h3.py plan --storyboard prompts/h3_electricity_safety_70s.txt
 ```
 
 **参考视频要按秒计费**这一点容易踩坑：把上一段 14 秒视频当 `reference_video` 传进去，
@@ -132,51 +135,41 @@ MINIMAX_API_KEY=your_key
 
 ```bash
 python3 minimax_h3.py plan --total 70
-python3 minimax_h3.py plan --storyboard prompts/h3_storyboard_example.txt
+python3 minimax_h3.py plan --storyboard prompts/h3_electricity_safety_70s.txt
 ```
 
 **第 2 步：dry-run 预演，看清每段要发什么（0 元）**
 
 ```bash
-python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
-    --image face.jpg --mode frame --dry-run
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt \
+    --image face.png --mode frame --dry-run
 
-python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
-    --image face.jpg --mode reference --carry-frame --transition 0.4 --dry-run
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt \
+    --image face.png --mode reference --carry-frame --transition 0.4 --dry-run
 ```
 
 **第 3 步：单段连通性验证（2 元）**
 
 ```bash
 python3 minimax_h3.py single --duration 4 --resolution 768P \
-    --prompt "固定机位中景，白衬衫藏青马甲的女讲解员站在纯白影棚里，双手交握身前，浅笑看镜头。角色说话：「大家好」" \
-    -o h3_probe.mp4
+    --prompt-file prompts/h3_electricity_safety_single.txt \
+    --image face.png -o h3_probe.mp4
 ```
 
-先确认密钥、余额、参数都对，再往下花钱。
+先确认密钥、余额、参数都对，再往下花钱。输出路径用 `--output` 或 `-o` 都可以（写成 `-output` 现在也能认）。
 
 **第 4 步：两段小样，验证衔接效果（约 4 元）**
 
-这一步最关键——**决定走 frame 还是 reference，别直接跑全长**。
+这一步最关键——**决定走 frame 还是 reference，别直接跑全长**。分镜已经写在仓库里，不要再 `cat > /tmp/sb2.txt`。
 
 ```bash
-cat > /tmp/sb2.txt <<'EOF'
-## 4s | 第一段
-固定机位中景，纯白影棚，白衬衫藏青马甲蓝白领结盘发的女讲解员，双手交握身前，浅笑看镜头。
-角色说话：「各位朋友大家好」
-
-## 4s | 第二段
-固定机位中景，纯白影棚，同一位白衬衫藏青马甲蓝白领结盘发的女讲解员，站姿延续上一段，双手仍交握身前。
-角色说话：「今天聊家庭安全用电」
-EOF
-
 # A：frame 链
-python3 minimax_h3.py chain --storyboard /tmp/sb2.txt --mode frame \
-    --image face.jpg --workdir data/h3_try_frame -o try_frame.mp4
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_probe.txt \
+    --mode frame --image face.png --workdir data/h3_try_frame -o try_frame.mp4
 
 # B：reference 链
-python3 minimax_h3.py chain --storyboard /tmp/sb2.txt --mode reference \
-    --image face.jpg --carry-frame --transition 0.4 \
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_probe.txt \
+    --mode reference --image face.png --carry-frame --transition 0.4 \
     --workdir data/h3_try_ref -o try_ref.mp4
 ```
 
@@ -185,8 +178,8 @@ python3 minimax_h3.py chain --storyboard /tmp/sb2.txt --mode reference \
 **第 5 步：全长 70 秒（35 元）**
 
 ```bash
-python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
-    --image face.jpg --mode frame --resolution 768P \
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt \
+    --image face.png --mode frame --resolution 768P \
     --workdir data/h3_full -o h3_70s.mp4
 ```
 
@@ -195,8 +188,8 @@ python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
 **第 6 步：口播场景换掉 H3 的配音**
 
 ```bash
-python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
-    --image face.jpg --mode frame --audio replace --external-audio my_voice.mp3 \
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt \
+    --image face.png --mode frame --audio replace --external-audio my_voice.mp3 \
     --workdir data/h3_full -o h3_70s_dub.mp4
 ```
 

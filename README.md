@@ -271,17 +271,26 @@ python3 kling_avatar.py --image face.jpg --audio speech_60s.mp3 \
 ## 附：MiniMax H3 长视频串接（实验性）
 
 H3 单次最长 15 秒，`minimax_h3.py` 把长视频拆成多段串行生成再拼接，支持两种串接策略、
-断点续跑、成本估算与 `--dry-run` 预演。
+断点续跑、成本估算与 `--dry-run` 预演。主题「安全用电直播」的分镜已经写好，直接用：
 
 ```bash
-python3 minimax_h3.py plan --total 70                       # 分段与成本估算（免费）
-python3 minimax_h3.py chain --storyboard prompts/h3_storyboard_example.txt \
-    --image face.jpg --dry-run                              # 预演，不花钱
+git fetch origin --prune && git checkout minimax-ai && git pull
+
+python3 minimax_h3.py plan --storyboard prompts/h3_electricity_safety_70s.txt
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_probe.txt \
+    --image face.png --mode frame --dry-run
+python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_probe.txt \
+    --mode frame --image face.png --workdir data/h3_try_frame -o try_frame.mp4
 ```
+
+仓库里应只有三个分支：`main` / `kling-ai`（可灵产品）/ `minimax-ai`（本工具）。
+如果本地还残留 `cursor/*`，那是过期缓存，执行 `git fetch origin --prune` 后删掉本地旧分支即可。
 
 **要点**：H3 是"自己生成音频"，不是"用你的音频驱动口型"，所以做 70 秒口播定稿时，
 台词精确度与段间音色一致性都不如可灵数字人。完整的可行性分析、四种方案对比、
 成本表与分级测试命令见 **[MINIMAX_H3.md](MINIMAX_H3.md)**。
+
+输出路径请用 `--output` 或 `-o`（`-output` 现在也能认）。
 
 ## 项目结构
 
@@ -292,7 +301,7 @@ server.py        FastAPI Web 控制台（任务队列 + 进度 + 持久化）
 web/index.html   前端单页（原生 JS，无构建步骤）
 stabilize.py     抖动后处理（诊断 + 多种方法）
 minimax_h3.py    MiniMax H3 长视频串接（实验性，见 MINIMAX_H3.md）
-prompts/         可编辑提示词模板、台词稿与 H3 分镜示例
+prompts/         可编辑提示词：可灵模板 + 安全用电台词稿 + H3 分镜（single/probe/70s）
 data/            运行数据：uploads / outputs / jobs.json（已 gitignore）
 ```
 

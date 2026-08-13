@@ -28,3 +28,19 @@
 #   --prompt-file prompts/electricity_safety_ultrashort.txt
 #
 # 文件里以 # 开头的行会被脚本忽略，可放心写注释。
+#
+# -----------------------------------------------------------------------------
+# MiniMax H3 分镜（和上面完全不是一套写法）
+# -----------------------------------------------------------------------------
+# H3 自己生成声音，台词要写进每一段提示词，不能只用可灵那份 recommended。
+# 现成「安全用电直播」分镜（复制即用，不必再写 /tmp/sb2.txt）：
+#
+#   prompts/h3_electricity_safety_single.txt   单段 4s 连通性（约 2 元）
+#   prompts/h3_electricity_safety_probe.txt    两段 4s 衔接小样（约 4 元）
+#   prompts/h3_electricity_safety_70s.txt      全长 70s（约 35 元）
+#
+#   python3 minimax_h3.py chain \
+#       --storyboard prompts/h3_electricity_safety_probe.txt \
+#       --mode frame --image face.png --dry-run
+#
+# 输出路径用 --output 或 -o，不要写成 -output。

@@ -99,7 +99,8 @@ def main() -> None:
     parser.add_argument("--prompt", default="", help="提示词：描述动作、情绪、镜头，≤2500 字符")
     parser.add_argument("--prompt-file", help="从文件读取提示词（# 行为注释），方便编辑测试")
     parser.add_argument("--mode", choices=["std", "pro"], default="std", help="std=标准 / pro=专家(质量更高)")
-    parser.add_argument("--output", default="avatar_output.mp4", help="输出视频路径")
+    parser.add_argument("-o", "--output", "-output", default="avatar_output.mp4",
+                        help="输出视频路径")
     parser.add_argument("--poll-interval", type=int, default=15, help="轮询间隔（秒）")
     parser.add_argument("--timeout", type=int, default=3600, help="等待超时（秒）")
     parser.add_argument("--stabilize", nargs="?", const="track", default=None,

@@ -1,21 +1,18 @@
 # =============================================================================
-# 本文件是 prompts/h3_electricity_safety_70s.txt 的兼容副本。
-# 请优先用带主题名的文件：
-#   prompts/h3_electricity_safety_single.txt   单段 4s 连通性（约 2 元）
-#   prompts/h3_electricity_safety_probe.txt    两段 4s 衔接小样（约 4 元）
-#   prompts/h3_electricity_safety_70s.txt      全长 70s（约 35 元）
+# H3 全长分镜（5×14 秒 = 70 秒 / 约 35 元）—— 安全用电直播
 # =============================================================================
-# 格式：
-#   ## 时长 | 段落标题        ← 时长可省略（省略时用 --prefer-duration）
-#   这一段的提示词，可写多行
+# 主题与可灵台词稿 prompts/electricity_safety_script.txt 对齐。
+# H3 会自己生成声音，台词必须写进每一段；中文口播约每秒 4~5 字。
+# 每段都重复外观/机位/站姿，否则段间会漂。
 #
-# 以单个 # 开头的行是注释，会被忽略。
+#   python3 minimax_h3.py plan  --storyboard prompts/h3_electricity_safety_70s.txt
+#   python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt \
+#       --image face.png --mode frame --dry-run
+#   python3 minimax_h3.py chain --storyboard prompts/h3_electricity_safety_70s.txt \
+#       --image face.png --mode frame --resolution 768P \
+#       --workdir data/h3_full -o h3_70s.mp4
 #
-# 写作要点（和可灵数字人的提示词写法不同）：
-#   1. H3 会自己生成声音。想让人物说话，就把台词直接写进提示词。
-#   2. 每段都要重复描述人物外观与场景，否则段与段之间会漂。
-#   3. 想固定机位就每段都写「固定机位」，H3 默认会给运镜。
-#   4. 段与段的画面要能接上：上一段结束的姿态 = 下一段开始的姿态。
+# 建议先跑 prompts/h3_electricity_safety_probe.txt 确认衔接，再花 35 元跑全长。
 # =============================================================================
 
 ## 14s | 开场问候

@@ -14,11 +14,13 @@ H3 单次最长 15 秒，本工具把长视频拆成多段串行生成再拼接�
         好处：身份锚点始终是原图，不累积漂移
         代价：段边界画面会跳变，需要转场掩盖（--transition）
 
-用法（成本从低到高）：
-    python3 minimax_h3.py plan   --storyboard prompts/h3_storyboard_example.txt
-    python3 minimax_h3.py single --prompt "..." --duration 4 --resolution 768P
-    python3 minimax_h3.py chain  --storyboard xxx.txt --image face.jpg --dry-run
-    python3 minimax_h3.py chain  --storyboard xxx.txt --image face.jpg
+用法（成本从低到高；分镜已放在 prompts/，不必手写 /tmp 文件）：
+    python3 minimax_h3.py plan   --storyboard prompts/h3_electricity_safety_70s.txt
+    python3 minimax_h3.py single --prompt-file prompts/h3_electricity_safety_single.txt --duration 4
+    python3 minimax_h3.py chain  --storyboard prompts/h3_electricity_safety_probe.txt \
+        --image face.png --dry-run
+    python3 minimax_h3.py chain  --storyboard prompts/h3_electricity_safety_probe.txt \
+        --image face.png --mode frame -o try_frame.mp4
 
 文档：https://platform.minimaxi.com/docs/guides/video-generation
 方案取舍与口播场景的结论：见 MINIMAX_H3.md
@@ -59,6 +61,15 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 
 class H3Error(Exception):
     """可预期的失败：配置缺失、参数不合法、API 报错。"""
+
+
+class H3ArgumentParser(argparse.ArgumentParser):
+    """把常见的 -output 写成单横线时，给出能看懂的提示。"""
+
+    def error(self, message: str) -> None:
+        if "-output" in message or "unrecognized arguments: -o" in message:
+            message += "\n提示：输出路径请用 --output 或 -o，例如 -o try_frame.mp4"
+        super().error(message)
 
 
 # --------------------------------------------------------------------------- 基础
@@ -225,6 +236,30 @@ def plan_segments(total: int, prefer: int = 14) -> list[int]:
     return segments
 
 
+def list_bundled_storyboards() -> list[str]:
+    d = Path(__file__).resolve().parent / "prompts"
+    if not d.is_dir():
+        return []
+    names = []
+    for p in sorted(d.glob("h3_*.txt")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not any(line.lstrip().startswith("##") for line in text.splitlines()):
+            continue
+        try:
+            names.append(str(p.relative_to(Path.cwd())))
+        except ValueError:
+            names.append(str(p))
+    return names
+
+
+def add_output_arg(parser: argparse.ArgumentParser, default: str) -> None:
+    """同时接受 --output、-o 和误写的 -output。"""
+    parser.add_argument("-o", "--output", "-output", default=default, help="输出视频路径")
+
+
 def load_storyboard(path: str) -> list[dict]:
     """读分镜脚本。格式：
 
@@ -236,7 +271,11 @@ def load_storyboard(path: str) -> list[dict]:
     """
     p = Path(path)
     if not p.is_file():
-        raise H3Error(f"找不到分镜脚本 {path}")
+        bundled = list_bundled_storyboards()
+        hint = ""
+        if bundled:
+            hint = "。仓库里现成的分镜（直接用这些路径，不必再写 /tmp 文件）：\n  " + "\n  ".join(bundled)
+        raise H3Error(f"找不到分镜脚本 {path}{hint}")
 
     segments: list[dict] = []
     current: dict | None = None
@@ -538,12 +577,27 @@ def cmd_plan(args: argparse.Namespace) -> None:
     print(f"  768P 生成后再生成 2K ≈ {c2['total']} 元")
 
 
+def load_prompt_text(path: str) -> str:
+    """读单段提示词文件。以 # 开头的行视为注释。"""
+    p = Path(path)
+    if not p.is_file():
+        raise H3Error(f"找不到提示词文件 {path}")
+    lines = [line.rstrip() for line in p.read_text(encoding="utf-8").splitlines()
+             if not line.lstrip().startswith("#")]
+    text = "\n".join(lines).strip()
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    if not text:
+        raise H3Error(f"提示词文件为空（或全是注释）: {path}")
+    return text
+
+
 def cmd_single(args: argparse.Namespace) -> None:
-    prompt = args.prompt
-    if args.prompt_file:
-        prompt = Path(args.prompt_file).read_text(encoding="utf-8").strip()
+    if args.prompt and args.prompt_file:
+        raise H3Error("--prompt 与 --prompt-file 只能二选一")
+    prompt = load_prompt_text(args.prompt_file) if args.prompt_file else args.prompt
     if not prompt:
-        raise H3Error("需要 --prompt 或 --prompt-file")
+        raise H3Error("需要 --prompt 或 --prompt-file（推荐 prompts/h3_electricity_safety_single.txt）")
 
     if args.image and args.reference:
         raise H3Error("--image（首帧）与 --reference（参考图）互斥，H3 不允许混用")
@@ -580,20 +634,22 @@ def cmd_single(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
+    parser = H3ArgumentParser(
         description="MiniMax H3 长视频串接：用 4~15 秒分段拼出 70 秒级成片",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_plan = sub.add_parser("plan", help="只做规划与成本估算，不调 API（免费）")
-    p_plan.add_argument("--storyboard", help="分镜脚本文件")
+    p_plan.add_argument("--storyboard",
+                        help="分镜脚本，推荐 prompts/h3_electricity_safety_70s.txt")
     p_plan.add_argument("--total", type=int, default=70, help="没有分镜时按总时长自动分段")
     p_plan.add_argument("--prefer-duration", type=int, default=14, help="每段目标时长（4~15）")
     p_plan.set_defaults(func=cmd_plan)
 
     p_single = sub.add_parser("single", help="生成单段（最便宜的连通性验证）")
     p_single.add_argument("--prompt", default="")
-    p_single.add_argument("--prompt-file")
+    p_single.add_argument("--prompt-file",
+                          help="提示词文件，推荐 prompts/h3_electricity_safety_single.txt")
     p_single.add_argument("--image", help="首帧图（本地文件或 URL）")
     p_single.add_argument("--last-frame", help="尾帧图，需与 --image 搭配")
     p_single.add_argument("--reference", action="append",
@@ -603,14 +659,15 @@ def main() -> None:
     p_single.add_argument("--resolution", choices=["768P", "2K"], default="768P")
     p_single.add_argument("--ratio", default="16:9",
                          help="文生视频必填且不能 adaptive；给了首帧则被忽略")
-    p_single.add_argument("--output", default="h3_single.mp4")
+    add_output_arg(p_single, "h3_single.mp4")
     p_single.add_argument("--poll-interval", type=int, default=10)
     p_single.add_argument("--timeout", type=int, default=1800)
     p_single.add_argument("--dry-run", action="store_true")
     p_single.set_defaults(func=cmd_single)
 
     p_chain = sub.add_parser("chain", help="按分镜串接多段成长视频")
-    p_chain.add_argument("--storyboard", required=True, help="分镜脚本（## 分段）")
+    p_chain.add_argument("--storyboard", required=True,
+                        help="分镜脚本，推荐 prompts/h3_electricity_safety_probe.txt 或 _70s.txt")
     p_chain.add_argument("--mode", choices=["frame", "reference"], default="frame",
                         help="frame=末帧接首帧(画面连贯) / reference=统一参考图(身份稳)")
     p_chain.add_argument("--image", help="角色图：frame 模式作第 1 段首帧；reference 模式作参考图")
@@ -629,7 +686,7 @@ def main() -> None:
     p_chain.add_argument("--external-audio", help="配 --audio replace 使用")
     p_chain.add_argument("--regenerate-2k", action="store_true", help="仅用于成本估算提示")
     p_chain.add_argument("--workdir", default="data/h3_chain", help="分段与断点续跑状态目录")
-    p_chain.add_argument("--output", default="h3_long.mp4")
+    add_output_arg(p_chain, "h3_long.mp4")
     p_chain.add_argument("--poll-interval", type=int, default=10)
     p_chain.add_argument("--timeout", type=int, default=3600)
     p_chain.add_argument("--dry-run", action="store_true", help="只预演，不调 API、不花钱")
