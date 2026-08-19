@@ -165,7 +165,7 @@ def _cli() -> None:
     import argparse
     import json
 
-    from klingclient import load_dotenv
+    from wsclient import load_dotenv
 
     load_dotenv()
     parser = argparse.ArgumentParser(description="模力方舟（国内）通道自检")

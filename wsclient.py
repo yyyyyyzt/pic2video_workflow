@@ -36,6 +36,19 @@ class WaveSpeedError(Exception):
     """所有可预期的失败（配置缺失、参数不合法、API 报错、任务失败）。"""
 
 
+def load_dotenv(path: str = ".env") -> None:
+    """极简 .env 加载：KEY=VALUE 按行读取，不覆盖已有环境变量。"""
+    p = Path(path)
+    if not p.is_file():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
 def api_key() -> str:
     key = os.environ.get("WAVESPEED_API_KEY", "").strip()
     if not key:

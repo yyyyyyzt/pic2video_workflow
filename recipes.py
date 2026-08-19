@@ -197,12 +197,20 @@ _ROUTE_U = [
 RECIPES: dict[str, Recipe] = {r.key: r for r in (_ROUTE_A + _ROUTE_B + _ROUTE_C + _ROUTE_U)}
 
 
+GROUPS = {
+    # 腾讯通用口型版的 10 秒筛选组合：便宜、覆盖开源/闭源、都能单图+音频
+    "screen": ("skyreels-std", "infinitetalk-fast", "omnihuman-15"),
+    # 筛选出赢家后再拿完整 60 秒复跑的质量档（原生或接近 1080p）
+    "tencent": ("omnihuman-15", "infinitetalk-720", "hunyuan-avatar", "ltx-lipsync"),
+}
+
+
 def by_route(route: str) -> list[Recipe]:
     return [r for r in RECIPES.values() if r.route == route.upper()]
 
 
 def resolve(keys: list[str]) -> list[Recipe]:
-    """把命令行传进来的名字解析成 Recipe。支持 `all`、路线名 `A`、以及逗号分隔。"""
+    """把命令行传进来的名字解析成 Recipe。支持 `all`、路线名 `A`、组合名 `screen`。"""
     out: list[Recipe] = []
     for raw in keys:
         for key in str(raw).split(","):
@@ -211,6 +219,8 @@ def resolve(keys: list[str]) -> list[Recipe]:
                 continue
             if key.lower() == "all":
                 out.extend(RECIPES.values())
+            elif key.lower() in GROUPS:
+                out.extend(RECIPES[k] for k in GROUPS[key.lower()])
             elif key.upper() in ROUTE_LABELS:
                 out.extend(by_route(key))
             elif key in RECIPES:
@@ -218,7 +228,7 @@ def resolve(keys: list[str]) -> list[Recipe]:
             else:
                 raise KeyError(
                     f"未知方案 {key!r}。可选：{', '.join(sorted(RECIPES))}，"
-                    f"或路线 {'/'.join(ROUTE_LABELS)}，或 all"
+                    f"组合 {', '.join(GROUPS)}，路线 {'/'.join(ROUTE_LABELS)}，或 all"
                 )
     # 去重但保持顺序
     seen: set[str] = set()

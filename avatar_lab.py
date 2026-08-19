@@ -9,11 +9,13 @@
 最后汇总成一张表，用客观数字排序，而不是靠肉眼感觉。
 
 常用命令：
-    python3 avatar_lab.py balance                     查余额
-    python3 avatar_lab.py list                        看所有方案和单价
-    python3 avatar_lab.py plan --seconds 60 --recipes A    先算钱，不花钱
-    python3 avatar_lab.py run --image a.jpg --audio b.mp3 --recipes skyreels-std
-    python3 avatar_lab.py report data/lab/20260819-1200 重新汇总已有结果
+    python3 avatar_lab.py balance
+    python3 tts.py --list-voices
+    python3 tts.py --script-file prompts/tencent_general_script_10s.txt -o speech_10s.mp3 --silence 2
+    python3 avatar_lab.py run --recipes screen --image face.jpg \\
+        --script-file prompts/tencent_general_script_10s.txt
+    python3 avatar_lab.py run --recipes omnihuman-15 --image face.jpg \\
+        --script-file prompts/tencent_general_script_60s.txt
 """
 
 from __future__ import annotations
@@ -26,10 +28,21 @@ from datetime import datetime
 from pathlib import Path
 
 import wsclient
-from klingclient import load_dotenv
-from recipes import RECIPES, ROUTE_LABELS, Recipe, build_payload, resolve
+from recipes import GROUPS, RECIPES, ROUTE_LABELS, Recipe, build_payload, resolve
+from wsclient import load_dotenv
 
 DEFAULT_OUTDIR = Path("data/lab")
+DEFAULT_PROMPT_FILE = Path("prompts/tencent_general_prompt.txt")
+DEFAULT_SCRIPT_10S = Path("prompts/tencent_general_script_10s.txt")
+DEFAULT_SCRIPT_60S = Path("prompts/tencent_general_script_60s.txt")
+
+DEFAULT_OUTDIR = Path("data/lab")
+
+# 各档位的时长下限，用来在合成台词后立刻提醒，而不是等生成完才发现太短
+PROFILE_MIN_SECONDS = {
+    "tencent-general": 60, "tencent-broadcast": 30, "tencent-hifi": 120,
+    "aliyun-fewshot": 10, "aliyun-hifi": 270,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +103,8 @@ def cmd_list(args: argparse.Namespace) -> int:
                 r.note,
             ])
         print(_table(["方案", "说明", "输入", "分辨率", f"{seconds:g}s 成本", "备注"], rows))
+    print(f"\n组合：screen = {' + '.join(GROUPS['screen'])}（10 秒筛选）")
+    print(f"      tencent = {' + '.join(GROUPS['tencent'])}（60 秒质量档）")
     print(f"\n成本按 {seconds:g} 秒计。带 ? 的是粗估：WaveSpeed 的 base_price 单位不统一"
           "（有的每秒、有的每 5 秒），官方也声明以实际扣费为准。")
     print("跑过一次之后会用实测单价（data/cost_calibration.json），? 消失即为实测。")
@@ -143,6 +158,112 @@ def cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """花钱之前先卡输入。图片比例不对或音频太短，生成出来必然不达标。"""
+    from compliance import PROFILES, ComplianceError, probe
+
+    profile = PROFILES[args.profile]
+    print(f"目标档位：{profile.label}")
+    print(f"  时长 {profile.min_seconds:g}~{profile.max_seconds:g}s"
+          f"　短边 ≥{profile.min_height}　{profile.min_fps:g}~{profile.max_fps:g}fps"
+          f"　{' 或 '.join(profile.allowed_ratios)}")
+    print()
+
+    problems: list[str] = []
+
+    if args.image:
+        try:
+            import struct
+
+            path = Path(args.image)
+            w = h = 0
+            # 只读文件头拿尺寸，不引入 Pillow 依赖
+            data = path.read_bytes()
+            if data[:2] == b"\xff\xd8":                       # JPEG
+                i = 2
+                while i < len(data) - 9:
+                    if data[i] != 0xFF:
+                        i += 1
+                        continue
+                    marker = data[i + 1]
+                    if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+                        h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                        break
+                    i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+            elif data[:8] == b"\x89PNG\r\n\x1a\n":            # PNG
+                w, h = struct.unpack(">II", data[16:24])
+
+            if w and h:
+                ratio = w / h
+                print(f"角色图 {path.name}：{w}×{h}，比例 {ratio:.3f}")
+                short = min(w, h)
+                if short < 720:
+                    problems.append(
+                        f"图片短边只有 {short}px，偏小。生成模型不会凭空补细节，"
+                        f"超分也救不回来，建议换一张短边 ≥1080 的图")
+                want_portrait = "9:16" in profile.allowed_ratios
+                if want_portrait and abs(ratio - 9 / 16) > 0.15 and abs(ratio - 16 / 9) > 0.15:
+                    problems.append(
+                        f"图片比例 {ratio:.2f} 既不接近 16:9 也不接近 9:16，"
+                        f"成片补边后人物会偏小，建议先按目标比例裁好再送进来")
+            else:
+                print(f"角色图 {path.name}：读不出尺寸（只支持 jpg/png 头解析），跳过检查")
+        except (OSError, struct.error, IndexError) as exc:
+            problems.append(f"角色图读取失败：{exc}")
+
+    if args.audio:
+        from mediaprep import audio_duration
+
+        dur = audio_duration(args.audio)
+        total = dur + args.silence
+        print(f"驱动音频 {Path(args.audio).name}：{dur:.1f}s"
+              f"（加 {args.silence:g}s 静默头后 {total:.1f}s）")
+        if total < profile.min_seconds:
+            problems.append(
+                f"成片会是 {total:.1f}s，短于该档位要求的 {profile.min_seconds:g}s。"
+                f"台词还需要再加约 {int((profile.min_seconds - total) * 4)} 字")
+        if total > profile.max_seconds:
+            problems.append(f"成片会是 {total:.1f}s，超过上限 {profile.max_seconds:g}s")
+
+    if args.video:
+        info = probe(args.video)
+        print(f"模板视频 {Path(args.video).name}："
+              f"{info['width']}×{info['height']} {info['fps']:g}fps {info['duration']:.1f}s")
+        if info["duration"] > 120:
+            problems.append(
+                f"模板视频 {info['duration']:.0f}s，Wan2.2-Animate 类模型标称上限 120s，"
+                f"超出部分可能被截断")
+
+    print()
+    if problems:
+        print("发现问题：")
+        for p in problems:
+            print(f"  - {p}")
+        print("\n这些问题会让成片无法入库，建议先修再花钱生成。")
+        return 1
+    print("输入检查通过，可以跑 run 了。")
+    return 0
+
+
+def cmd_tts(args: argparse.Namespace) -> int:
+    import tts
+    from mediaprep import audio_duration, prepend_silence
+
+    text = args.text or tts.read_script(args.script_file)
+    est = tts.estimate_seconds(text, args.speed)
+    print(f"台词 {len(text)} 字，预计约 {est:.0f} 秒，音色 {args.voice}")
+    out, cost = tts.synthesize(text, args.output, voice=args.voice, speed=args.speed,
+                               emotion=args.emotion,
+                               on_tick=lambda s, e: _log(f"  {s} ({e}s)"))
+    if args.silence > 0:
+        raw = out.with_name(out.stem + "_raw" + out.suffix)
+        out.rename(raw)
+        out = prepend_silence(raw, Path(args.output).with_suffix(".mp3"), args.silence)
+        print(f"已在开头接 {args.silence:g} 秒静音（原始合成保留为 {raw.name}）")
+    print(f"已生成 {out}，实际 {audio_duration(out):.1f}s，扣费 ${cost:.4f}")
+    return 0
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     result = wsclient.poll(args.prediction_id, timeout=args.timeout, interval=args.interval,
                            on_tick=lambda s, e: _log(f"  {s} ({e}s)"))
@@ -157,8 +278,11 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def _read_prompt(args: argparse.Namespace) -> str:
-    if args.prompt_file:
-        lines = Path(args.prompt_file).read_text(encoding="utf-8").splitlines()
+    prompt_file = args.prompt_file
+    if not args.prompt and not prompt_file and DEFAULT_PROMPT_FILE.is_file():
+        prompt_file = str(DEFAULT_PROMPT_FILE)
+    if prompt_file:
+        lines = Path(prompt_file).read_text(encoding="utf-8").splitlines()
         return " ".join(l.strip() for l in lines
                         if l.strip() and not l.strip().startswith("#"))
     return args.prompt or ""
@@ -302,12 +426,38 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not picked:
         print("没有选中任何方案")
         return 1
+    if not (args.audio or args.script or args.script_file or args.video):
+        print("错误：请给出 --audio，或 --script / --script-file 走 TTS。"
+              f"10 秒筛选台词：--script-file {DEFAULT_SCRIPT_10S}")
+        return 1
 
     outdir = Path(args.outdir or DEFAULT_OUTDIR / datetime.now().strftime("%Y%m%d-%H%M%S"))
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # 音频先加静默头，再据此算真实时长与成本
+    # 给了台词就先合成驱动音频。视频时长完全由音频决定，所以这一步定成片长度
     audio_path = args.audio
+    if not audio_path and (args.script or args.script_file):
+        import tts
+
+        text = args.script or tts.read_script(args.script_file)
+        est = tts.estimate_seconds(text, args.tts_speed)
+        _log(f"合成台词：{len(text)} 字，预计约 {est:.0f} 秒，音色 {args.voice}")
+        synth, tts_cost = tts.synthesize(
+            text, outdir / "input_audio_tts.mp3", voice=args.voice,
+            speed=args.tts_speed, emotion=args.tts_emotion,
+            on_tick=lambda s, e: _log(f"  TTS {s} ({e}s)"))
+        audio_path = str(synth)
+        from mediaprep import audio_duration as _dur
+        actual = _dur(synth)
+        _log(f"TTS 完成 {actual:.1f}s，扣费 ${tts_cost:.4f}")
+
+        floor = PROFILE_MIN_SECONDS.get(args.profile, 0)
+        if floor and actual + args.silence < floor:
+            _log(f"警告：成片将只有 {actual + args.silence:.1f}s，"
+                 f"短于 {args.profile} 要求的 {floor:g}s，平台会退料。"
+                 f"台词再加约 {int((floor - actual - args.silence) * 4.5)} 字")
+
+    # 音频加静默头，再据此算真实时长与成本
     if audio_path and args.silence > 0:
         padded = outdir / "input_audio_padded.mp3"
         prepend_silence(audio_path, padded, args.silence)
@@ -471,9 +621,15 @@ def main() -> int:
 
     p = sub.add_parser("run", help="跑实验")
     p.add_argument("--recipes", nargs="+", required=True,
-                   help="方案名/路线名(A,B,C)/all，逗号或空格分隔")
+                   help="方案名 / 组合(screen,tencent) / 路线(A,B,C) / all")
     p.add_argument("--image", help="角色图（本地路径或 URL）")
     p.add_argument("--audio", help="驱动音频（本地路径或 URL）")
+    p.add_argument("--script", help="台词文本，没有 --audio 时自动 TTS 合成")
+    p.add_argument("--script-file", help="台词稿文件，# 开头的行是注释")
+    p.add_argument("--voice", default="qwen:Cherry",
+                   help="TTS 音色，见 python3 tts.py --list-voices")
+    p.add_argument("--tts-speed", type=float, default=1.0)
+    p.add_argument("--tts-emotion", default="neutral")
     p.add_argument("--video", help="模板视频，路线 C 需要")
     p.add_argument("--prompt", default="")
     p.add_argument("--prompt-file")
@@ -495,6 +651,26 @@ def main() -> int:
     p.add_argument("--yes", action="store_true", help="不询问直接跑")
     p.set_defaults(func=cmd_run)
 
+    p = sub.add_parser("preflight", help="花钱前先检查输入是否可能达标")
+    p.add_argument("--image")
+    p.add_argument("--audio")
+    p.add_argument("--video")
+    p.add_argument("--profile", default="tencent-general")
+    p.add_argument("--silence", type=float, default=2.0)
+    p.set_defaults(func=cmd_preflight)
+
+    p = sub.add_parser("tts", help="单独合成驱动音频")
+    p.add_argument("--text")
+    p.add_argument("--script-file", default=str(DEFAULT_SCRIPT_10S),
+                   help="台词稿。默认 10 秒筛选稿")
+    p.add_argument("-o", "--output", default="speech_10s.mp3")
+    p.add_argument("--voice", default="qwen:Cherry")
+    p.add_argument("--speed", type=float, default=1.0)
+    p.add_argument("--emotion", default="neutral")
+    p.add_argument("--silence", type=float, default=2.0,
+                   help="开头静音秒数，0 表示不加")
+    p.set_defaults(func=cmd_tts)
+
     p = sub.add_parser("report", help="重新汇总已有结果目录")
     p.add_argument("outdir")
     p.set_defaults(func=cmd_report)
@@ -508,6 +684,13 @@ def main() -> int:
     except KeyError as exc:
         print(f"错误：{exc.args[0] if exc.args else exc}", file=sys.stderr)
         return 1
+    except Exception as exc:
+        # TTSError / ComplianceError 都走这里，避免再引入一串 import
+        name = type(exc).__name__
+        if name in ("TTSError", "ComplianceError", "ValueError"):
+            print(f"错误：{exc}", file=sys.stderr)
+            return 1
+        raise
     except KeyboardInterrupt:
         print("\n已中断（已提交的任务仍在服务端跑，可用 fetch 取回）")
         return 130
