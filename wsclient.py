@@ -223,16 +223,27 @@ def load_calibration(path: Path = CALIBRATION_PATH) -> dict[str, dict]:
 
 def record_calibration(model_id: str, cost: float, seconds: float,
                        path: Path = CALIBRATION_PATH) -> None:
-    """把一次实测扣费并入单价表，取移动平均以摊掉四舍五入误差。"""
+    """把一次实测扣费并入单价表。
+
+    用「累计花费 ÷ 累计秒数」而不是各次单价的算术平均：余额只精确到分，
+    短任务还可能触发最低计费，单独看一条 3 秒的任务算出来的单价会明显偏高
+    （实测同一模型 3 秒算出 $0.053/秒、7 秒算出 $0.040/秒）。按时长加权后
+    长任务的权重更大，估算 60 秒成本时更接近真实值。
+    """
     if cost <= 0 or seconds <= 0:
         return
     import json
 
     table = load_calibration(path)
-    entry = table.get(model_id, {"per_second": 0.0, "samples": 0})
-    n = entry["samples"]
-    entry["per_second"] = round((entry["per_second"] * n + cost / seconds) / (n + 1), 6)
-    entry["samples"] = n + 1
+    entry = table.get(model_id) or {"total_cost": 0.0, "total_seconds": 0.0, "samples": 0}
+    # 兼容旧格式
+    entry.setdefault("total_cost", 0.0)
+    entry.setdefault("total_seconds", 0.0)
+
+    entry["total_cost"] = round(entry["total_cost"] + cost, 4)
+    entry["total_seconds"] = round(entry["total_seconds"] + seconds, 2)
+    entry["samples"] = entry.get("samples", 0) + 1
+    entry["per_second"] = round(entry["total_cost"] / entry["total_seconds"], 6)
     entry["last_cost"] = cost
     entry["last_seconds"] = round(seconds, 2)
     table[model_id] = entry

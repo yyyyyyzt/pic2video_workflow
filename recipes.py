@@ -176,8 +176,8 @@ _ROUTE_C = [
 _ROUTE_U = [
     Recipe("up-bytedance", "U", "bytedance/video-upscaler", 0.0072,
            ("video",), "字节视频超分 → 1080p",
-           params={"target_resolution": "1080p"}, verified_per_second=0.01,
-           note="已实测：$0.01/秒（3 秒扣 $0.03），60 秒 $0.60。最便宜的达标手段"),
+           params={"target_resolution": "1080p"}, verified_per_second=0.0083,
+           note="已实测：约 $0.008/秒，60 秒 $0.50。最便宜的 1080P 达标手段"),
     Recipe("up-wavespeed", "U", "wavespeed-ai/video-upscaler", 0.025,
            ("video",), "WaveSpeed 视频超分 → 1080p",
            params={"target_resolution": "1080p"}),

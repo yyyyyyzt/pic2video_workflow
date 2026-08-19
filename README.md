@@ -1,3 +1,273 @@
+# 数字人视频生成
+
+两套东西：
+
+1. **[数字人平台训练素材实验台](#数字人平台训练素材实验台)**（`avatar_lab.py`）——生成用来喂给
+   **腾讯云数智人 / 阿里云数字人**平台做形象定制的口播素材。横向跑 28 个 API 方案，
+   自动做超分和规格规范化，并按平台入库标准逐条卡验收。**新需求看这一节。**
+2. **[可灵数字人](#可灵数字人视频生成)**（`kling_avatar.py` / `server.py`）——最初的单供应商版本，
+   出成片用。TTS、提示词模板、抖动后处理都在这边。
+
+---
+
+# 数字人平台训练素材实验台
+
+## 这一节要解决的问题
+
+目标不是「生成一条好看的视频」，而是**生成一条平台肯收、且训练出来的形象够自然的素材**。
+真人拍摄的问题在于没有镜头感、表情僵硬、口误重拍，一分钟的口播能耗掉一小时还拍不好；
+而需要经常换人时，这个成本要乘以人数。用 AI 生成素材可以绕开这些，
+但换来一个新约束：**平台在「系统检测」环节会按硬指标退料**。
+
+这一点很容易踩坑，因为绝大多数数字人 API 默认输出 480p/720p、25fps，而平台最低要 1080P。
+所以 `avatar_lab.py` 跑的不是单纯的「生成」，而是完整一条：
+
+```
+上传素材 → 生成 → 超分到 1080p → 规范化(比例/帧率/容器) → 入库合规校验 → 抖动指标 → 汇总排名
+```
+
+## 平台入库硬指标
+
+跑之前先确认你要投的是哪一档，因为要求差别很大（`compliance.py` 里已内置这五档）：
+
+| 档位 | 时长 | 分辨率 | 帧率 | 素材内容 |
+| :-- | :-- | :-- | :-- | :-- |
+| `tencent-broadcast` 腾讯·播报场景 | ≥30 秒 | 1080P / 4K | 25–60 | 口播 |
+| `tencent-general` 腾讯·通用口型 | 1–10 分钟 | 1080P / 4K | 25–60 | 口播 |
+| `tencent-hifi` 腾讯·高精版 | 2–10 分钟 | **必须 4K** | 25–60 | 口播 |
+| `aliyun-fewshot` 阿里·2D 小样本 | **10 秒–2 分钟** | 1080P+ | **≥30** | **全程闭嘴，不说话** |
+| `aliyun-hifi` 阿里·2D 高精度 | 5 分钟 | 1080P+ | ≥30 | 口播 |
+
+共同要求：宽高比严格 16:9 或 9:16、mp4/mov、全程无剪辑无跳帧、人脸清晰正视镜头无遮挡、
+**开头静默闭口 1–3 秒**。
+
+两个值得注意的点：
+
+- **腾讯官方明确支持用 AI 生成素材**。它的[播报场景录制指引](https://cloud.tencent.com/document/product/1240/103864)里
+  写了「您可以通过 AI 生成技术快速生成一段约一分钟的人物视频，在数智人平台上训练和使用」，
+  不用担心这条路本身不被认可。
+- **阿里云 2D 小样本版根本不需要一分钟口播**。它只要 10 秒~2 分钟的**无口播、全程闭嘴**素材，
+  口型由平台的通用口型模型驱动；官方文档甚至直接给出了 AI 生成参考提示词。
+  这是所有路线里最省钱、最不容易崩的一条——如果你的平台侧可以选这一档，优先走它（下面路线 B）。
+
+## 四条路线
+
+`python3 avatar_lab.py list` 可以看到全部 28 个方案和单价。
+
+| 路线 | 做法 | 什么时候用 |
+| :-- | :-- | :-- |
+| **A 单图直出** | 一张图 + 音频 → 说话视频 | 默认起点。要频繁换人时最省事 |
+| **B 静默素材** | 一张图 → 10~15 秒闭嘴微动视频 | 投阿里云小样本版。最便宜、最稳 |
+| **C 角色替换** | 模板视频 + 图/音频 | 要 60 秒以上且必须绝对稳定时 |
+| **U 超分收尾** | 任意视频 → 1080p / 4K | A 和 C 基本都要，因为平台最低 1080P |
+
+## 准备
+
+```bash
+pip install -r requirements.txt
+apt install ffmpeg          # 或 brew install ffmpeg，compliance/mediaprep 依赖它
+
+cp .env.example .env
+# 填 WAVESPEED_API_KEY=wsk_live_xxxx（海外，模型最全）
+# 国内通道另填 MOARK_API_KEY（模力方舟，有 InfiniteTalk 和 Duix-Avatar）
+
+python3 avatar_lab.py balance      # 确认 key 通了
+```
+
+素材准备两样：一张**正面清晰、五官无遮挡、嘴巴闭合**的角色图，
+一段**60 秒左右的口播音频**（可以先用现有的 `kling_avatar.py --list-voices` 走 TTS 生成）。
+
+## 关于花钱，先看这里
+
+WaveSpeed 的 `base_price` **单位因模型而异**，官方文档也写了「以实际扣费为准」。
+本仓库已实测两个：
+
+| 模型 | base_price | 实测真实单价 | 60 秒成本 |
+| :-- | --: | --: | --: |
+| SkyReels V3 标准版 | 0.04 | **$0.044 / 秒**（即每秒计价） | ≈ $2.6 |
+| 字节视频超分 → 1080p | 0.0072 | **$0.008 / 秒** | ≈ $0.5 |
+
+对比之下 InfiniteTalk 的 `base_price` 同样是 0.15，但官方描述写的是「720p tier
+$0.30/**5s**」——两者差 5 倍。所以工具不靠公式猜，而是**在每次调用前后各查一次余额，
+用差额算出真实成本**，写进 `data/cost_calibration.json`（按累计花费÷累计秒数加权，
+因为余额只精确到分，短任务算出来的单价会偏高）。`plan` 输出里带 `?` 的是还没实测过的
+粗估，**可能偏差数倍**，跑过一次就自动变准。
+
+**你现在这个 key 只有 $1**，实测下来跑一条 60 秒的 SkyReels + 超分就要约 $3。
+所以下面的步骤按「先花几毛钱筛方案，再花几美元出成片」来排。
+要跑完整轮对比，建议先充 $20~30。
+
+## 执行步骤
+
+### 第 0 步：验证连通性（免费）
+
+```bash
+python3 avatar_lab.py balance                 # 查余额
+python3 avatar_lab.py list --seconds 60       # 看全部方案和 60 秒成本
+python3 avatar_lab.py models --filter avatar  # 查 WaveSpeed 上还有什么模型
+```
+
+### 第 1 步：本地链路自检（免费，不调 API）
+
+先确认 ffmpeg 那套能用，免得 API 跑完了卡在最后一步：
+
+```bash
+# 造一个故意不合规的样本：480×832、25fps、12 秒
+ffmpeg -f lavfi -i "testsrc2=size=480x832:rate=25:duration=12" \
+       -f lavfi -i "sine=frequency=400:duration=12" \
+       -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest /tmp/fake.mp4
+
+python3 compliance.py /tmp/fake.mp4 --profile tencent-general    # 应该报一堆不通过
+python3 mediaprep.py normalize /tmp/fake.mp4 -o /tmp/fixed.mp4 --profile tencent-general
+python3 compliance.py /tmp/fixed.mp4 --profile tencent-general   # 分辨率/比例/帧率应转为通过
+```
+
+### 第 2 步：用 10 秒音频筛方案（约 $0.3~2，看选几个）
+
+**不要一上来就跑 60 秒。**先拿一段 10 秒音频把候选模型过一遍，
+挑出身份保持和口型最好的那个，再花钱跑完整长度。
+
+```bash
+# 先估价，不花钱
+python3 avatar_lab.py plan --seconds 10 \
+    --recipes skyreels-std infinitetalk-fast omnihuman-15 hunyuan-avatar
+
+# 确认预算后再跑
+python3 avatar_lab.py run \
+    --recipes skyreels-std infinitetalk-fast omnihuman-15 \
+    --image face.jpg --audio speech_10s.mp3 \
+    --prompt "固定机位，人物端坐口播，正视镜头，躯干基本不动，只有口型和微表情，动作缓慢平滑，背景保持稳定" \
+    --profile tencent-general \
+    --outdir data/lab/screen10s
+```
+
+跑完看汇总表，然后**一定要用眼睛看一遍** `data/lab/screen10s/*/03_final.mp4`，
+重点看：像不像本人、牙齿和嘴部有没有糊、有没有色偏。指标只能判稳定性，判不了像不像。
+
+### 第 3 步：赢家跑完整 60 秒（约 $1.5~3）
+
+```bash
+python3 avatar_lab.py run \
+    --recipes <第2步的赢家> \
+    --image face.jpg --audio speech_60s.mp3 \
+    --prompt-file prompts/electricity_safety_recommended.txt \
+    --profile tencent-general --silence 2 \
+    --outdir data/lab/final60s
+```
+
+`--silence 2` 会在音频前面接 2 秒静音，这样生成出来的开头人物自然是闭嘴的，
+正好满足腾讯「开头静默闭口 1–3 秒」，比事后剪一段静止帧干净（平台还要求全程无剪辑）。
+
+### 第 4 步：验证 120 秒会不会漂（约 $3~6）
+
+InfiniteTalk 官方说 I2V 一分钟以内效果好，**超过 1 分钟色偏和身份保持会明显退化**。
+你的目标是 60~120 秒，所以这条必须实测，不能靠推测：
+
+```bash
+python3 avatar_lab.py run --recipes <赢家> \
+    --image face.jpg --audio speech_120s.mp3 \
+    --profile tencent-general --outdir data/lab/long120s
+```
+
+对比 `01_raw.mp4` 的第 10 秒和第 110 秒两帧，看肤色、服装颜色、五官是否还是同一个人。
+如果明显漂了，转第 6 步的角色替换路线。
+
+### 第 5 步：如果投阿里云小样本版，走这条（约 $1.2，最省）
+
+只要 10 秒闭嘴素材，用阿里官方给的提示词：
+
+```bash
+python3 avatar_lab.py run --recipes silent-seedance-1080 \
+    --image face.jpg \
+    --prompt "下半身严格对齐输入图像，完全不动；上半身仅有极其微弱的整体浮动，幅度不超过1~2像素；嘴唇全程闭合，与输入图像一致，无任何动作；眼神生动，每隔4到6秒自然眨眼一次，要轻，频率低；手部可以有手腕翻转、手指交叉、双手自然下垂等轻微克制动作，频率低；衣物、背景、构图绝对静止，无抖动或形变；视频首尾帧一致，支持无缝正倒放循环。不要加任何字幕。" \
+    --profile aliyun-fewshot --silence 0 --upscale "" \
+    --outdir data/lab/silent
+
+# 素材不足 10 秒或想拉长时，用正倒放循环补到目标时长（和平台内部做法一致）
+python3 mediaprep.py loop data/lab/silent/silent-seedance-1080/01_raw.mp4 \
+    -o /tmp/looped.mp4 --seconds 60
+python3 mediaprep.py normalize /tmp/looped.mp4 -o /tmp/silent_final.mp4 --profile aliyun-fewshot
+python3 compliance.py /tmp/silent_final.mp4 --profile aliyun-fewshot
+```
+
+### 第 6 步：60 秒以上要绝对稳定，走角色替换（约 $2~6）
+
+思路是把「长视频稳定性」从生成模型手里拿走：运动和背景来自一段真实模板视频，
+生成模型只负责换脸和对口型。模板视频拍一次可以反复用，而且**不需要你有镜头感**——
+它只提供身体动作，脸和声音都会被换掉。
+
+```bash
+# 6a 先换人：把模板视频里的人换成你的角色图
+python3 avatar_lab.py run --recipes animate-replace \
+    --image face.jpg --video template_60s.mp4 \
+    --profile tencent-general --outdir data/lab/replace
+
+# 6b 再换口型：用你的 TTS 音频驱动
+python3 avatar_lab.py run --recipes lipsync-2-pro \
+    --video data/lab/replace/animate-replace/03_final.mp4 --audio speech_60s.mp3 \
+    --profile tencent-general --outdir data/lab/replace_lipsync
+```
+
+顺带说，Wan2.2-Animate 常被认为只能做短片，但那是**阿里云百炼官方接口**的限制
+（参考视频 2–30 秒）；WaveSpeed 这类第三方托管标称支持到 120 秒，
+schema 里也写了 `up to 120 seconds`。不过托管方自己加了免责声明说这是计费上限、
+不保证质量，所以值得用第 4 步同样的方法实测一次。
+
+### 第 7 步：交付前最后一道
+
+```bash
+python3 avatar_lab.py report data/lab/final60s          # 重新看汇总和未过项
+python3 compliance.py data/lab/final60s/*/03_final.mp4 --profile tencent-general
+python3 stabilize.py data/lab/final60s/*/03_final.mp4 --method analyze
+```
+
+`analyze` 如果报出明显的孤立尖峰，用现有的 `stabilize.py --method track` 修一遍再交
+（详见下面[后处理](#后处理消除前后两帧人物位置顿一下)一节）。注意平台要求全程无剪辑，
+所以只能做整帧补偿，不能裁掉帧。
+
+## 国内通道（模力方舟）
+
+节点在国内，同时有 InfiniteTalk 和 Duix-Avatar，适合对海外网络或合规有顾虑的场景：
+
+```bash
+python3 moarkclient.py models --filter avatar    # 免鉴权，先看有什么
+python3 moarkclient.py probe InfiniteTalk --image <url> --audio <url>
+```
+
+需要说明的是，模力方舟这两个模型的确切入参、时长上限和单价，官网未登录抓不到
+（模型列表是前端动态加载的），必须登录控制台在模型体验页看「API」示例。
+`probe` 子命令的作用就是拿真实报错反推字段名，据此校准 `moarkclient.py` 里的 payload。
+
+## 命令速查
+
+| 命令 | 作用 |
+| :-- | :-- |
+| `avatar_lab.py balance` | 查余额 |
+| `avatar_lab.py list [--seconds N]` | 列出全部方案与成本 |
+| `avatar_lab.py plan --recipes ... --seconds N` | 估算成本，不花钱 |
+| `avatar_lab.py run --recipes ...` | 跑实验（完整流水线） |
+| `avatar_lab.py report <目录>` | 重新汇总已有结果 |
+| `avatar_lab.py fetch <prediction_id>` | 取回中断的任务 |
+| `avatar_lab.py models --filter kw` | 查 WaveSpeed 模型清单 |
+| `compliance.py <视频> --profile X` | 单独做入库校验 |
+| `mediaprep.py normalize/silence/loop/mux` | 单独做媒体处理 |
+
+`--recipes` 支持方案名、路线名（`A`/`B`/`C`/`U`）、`all`，逗号或空格分隔。
+`run` 默认有 `--max-cost 1.0` 的护栏，超了要显式 `--yes`。
+
+## 踩过的坑
+
+- **别按 base_price 估成本**。单位不统一，SkyReels 是每秒、InfiniteTalk 是每 5 秒，
+  实测差了 4 倍。以余额差额为准。
+- **480p 出来的是 480×832，比例 1.733，不是标准 9:16**（1.778），平台会判不合格。
+  `mediaprep.py normalize` 用「等比缩放 + 补边」而不是裁切来修，避免切掉头顶或下巴。
+- **阿里云要求 ≥30fps，而多数模型输出 25fps**，必须重采样，腾讯的 25–60fps 则不用。
+- **超分不是免费的**。60 秒 $0.60，虽然便宜但不是可忽略；原生 1080p 的方案
+  （`ltx-lipsync`、`silent-seedance-1080`）会自动跳过这一步。
+- **Bronze 账号限流 5 次/分钟、2 个并发**，方案是串行跑的，别改成并发。
+
+---
+
 # 可灵数字人视频生成
 
 基于**可灵 AI 数字角色 2.0** 官方 API：**一张角色图** + **一段音频（或一段台词自动配音）** + **一句提示词**，直接生成口型、表情、动作俱全的数字人视频。
