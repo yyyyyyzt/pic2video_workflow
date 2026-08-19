@@ -9,3 +9,6 @@ python-multipart>=0.0.9
 # 后处理（stabilize.py / --stabilize）才需要；另需系统安装 ffmpeg
 opencv-python-headless>=4.8
 numpy>=1.24
+
+# avatar_lab.py（多方案实验台）只用到 requests，但 mediaprep.py / compliance.py
+# 依赖系统的 ffmpeg + ffprobe，务必先装：apt install ffmpeg / brew install ffmpeg
