@@ -7,6 +7,7 @@
 
 配合 mediaprep.prepend_silence 使用：合成完在前面接 1~3 秒静音，
 生成出来的视频开头人物就是闭嘴静默的，正好满足腾讯的录制规范。
+注意：模型常把静音段演成「深吸一口气」，avatar_lab 默认会再用角色图静止帧换掉这段画面。
 
 用法：
     python3 tts.py --list-voices

@@ -24,8 +24,11 @@
 所以 `avatar_lab.py` 跑的不是单纯的「生成」，而是完整一条：
 
 ```
-上传素材 → 生成 → 超分到 1080p → 规范化(比例/帧率/容器) → 入库合规校验 → 抖动指标 → 汇总排名
+上传素材 → 生成 → 超分到 1080p → 规范化(比例/帧率/容器)
+→ 静帧替换静默头 → 入库合规校验 → 抖动指标 → 汇总排名
 ```
+
+`入库校验`是本地预检腾讯/阿里「系统检测」的硬指标（时长、短边、比例、帧率、封装、文件大小、开头 2 秒音量 ≤ -45dB），**不是生成失败**。10 秒筛选成片过不了 60 秒门槛，这是故意的；实时日志现在会逐条打出未过项。
 
 ## 平台入库硬指标
 
@@ -164,7 +167,11 @@ python3 avatar_lab.py run --recipes screen \
 
 跑完看汇总表，然后**一定要用眼睛看一遍** `data/lab/screen10s/*/03_final.mp4`，
 重点看：像不像本人、牙齿和嘴部有没有糊、有没有色偏。指标只能判稳定性，判不了像不像。
-10 秒成片过不了 60 秒入库门槛，这是故意的。
+10 秒成片过不了 60 秒入库门槛，这是故意的；日志会写「这是 10s 筛选轮次的预期结果」。
+
+开头 2 秒静默是平台要求（`--silence 2`），但模型常把静音段演成「深吸一口气」。
+流水线默认会把这 2 秒画面换成角色图静止帧（`--still-head`，音轨不动）。
+角色图请用**嘴巴闭合**的正面照。不想换画面就加 `--no-still-head`。
 
 ### 第 4 步：赢家跑完整 60 秒（约 $1.5~3）
 
@@ -247,7 +254,7 @@ python3 moarkclient.py probe InfiniteTalk --image <url> --audio <url>
 | `tts.py --list-voices` | 列出中文音色 |
 | `avatar_lab.py models --filter kw` | 查 WaveSpeed 模型清单 |
 | `compliance.py <视频> --profile X` | 单独做入库校验 |
-| `mediaprep.py normalize/silence/loop/mux` | 单独做媒体处理 |
+| `mediaprep.py normalize/silence/still-head/loop/mux` | 单独做媒体处理 |
 
 `--recipes` 支持方案名、路线名（`A`/`B`/`C`/`U`）、`all`，逗号或空格分隔。
 `run` 默认有 `--max-cost 1.0` 的护栏，超了要显式 `--yes`。
@@ -261,6 +268,9 @@ python3 moarkclient.py probe InfiniteTalk --image <url> --audio <url>
 - **阿里云要求 ≥30fps，而多数模型输出 25fps**，必须重采样，腾讯的 25–60fps 则不用。
 - **超分不是免费的**。60 秒 $0.60，虽然便宜但不是可忽略；原生 1080p 的方案
   （`ltx-lipsync`、`silent-seedance-1080`）会自动跳过这一步。
+- **开头静默会被模型演成吸气**。给音频加 2 秒静音后，SkyReels / InfiniteTalk 一类模型
+  经常在开口前深吸一口气、耸肩提气。静音本身要留（平台卡前 2 秒音量），但画面用
+  `mediaprep.py still-head` 换成角色图静止帧。`run` 默认开启。
 - **Bronze 账号限流 5 次/分钟、2 个并发**，方案是串行跑的，别改成并发。
 
 ---

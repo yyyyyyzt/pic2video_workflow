@@ -4,7 +4,8 @@
 它解决的不是「生成一条视频」，而是「在十几个候选模型里挑出哪个能过平台入库」。
 所以每个方案跑完都会自动走完整条流水线：
 
-    上传素材 → 生成 → 超分到 1080p → 规范化(比例/帧率/容器) → 入库合规校验 → 抖动指标
+    上传素材 → 生成 → 超分到 1080p → 规范化(比例/帧率/容器)
+    → 静帧替换静默头（去掉模型演的吸气）→ 入库合规校验 → 抖动指标
 
 最后汇总成一张表，用客观数字排序，而不是靠肉眼感觉。
 
@@ -219,9 +220,10 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         print(f"驱动音频 {Path(args.audio).name}：{dur:.1f}s"
               f"（加 {args.silence:g}s 静默头后 {total:.1f}s）")
         if total < profile.min_seconds:
+            import tts
             problems.append(
                 f"成片会是 {total:.1f}s，短于该档位要求的 {profile.min_seconds:g}s。"
-                f"台词还需要再加约 {int((profile.min_seconds - total) * 4)} 字")
+                f"台词还需要再加约 {int((profile.min_seconds - total) * tts.CHARS_PER_SECOND)} 字")
         if total > profile.max_seconds:
             problems.append(f"成片会是 {total:.1f}s，超过上限 {profile.max_seconds:g}s")
 
@@ -316,6 +318,20 @@ def _isnum(token: str) -> bool:
         return False
 
 
+def _log_compliance(recipe_key: str, report, profile: str) -> None:
+    """把入库校验的每一项打到实时日志，避免只看到「不通过」却不知道挂在哪。"""
+    _log(f"[{recipe_key}] 入库校验 {'通过' if report.passed else '不通过'}")
+    if report.passed:
+        return
+    failed = [c for c in report.checks if not c.ok]
+    for c in failed:
+        _log(f"[{recipe_key}]   [!!] {c.name}: {c.detail}")
+    names = [c.name for c in failed]
+    duration = report.probe.get("duration", 0)
+    if names == ["时长"] and duration < 60 and profile == "tencent-general":
+        _log(f"[{recipe_key}]   这是 10s 筛选轮次的预期结果，换 60s 台词再交平台")
+
+
 def _billed(fn, model_id: str, seconds: float) -> tuple[dict, float]:
     """执行一次计费调用，用余额差额测出真实成本并写进校准表。
 
@@ -343,7 +359,7 @@ def _billed(fn, model_id: str, seconds: float) -> tuple[dict, float]:
 def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
     """跑单个方案的完整流水线，返回结果记录。"""
     from compliance import ComplianceError, check, probe
-    from mediaprep import normalize
+    from mediaprep import normalize, replace_silent_head
 
     workdir: Path = ctx["outdir"] / recipe.key
     workdir.mkdir(parents=True, exist_ok=True)
@@ -392,7 +408,21 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
             record["cost_upscale"] = up_cost
 
         # 规范化到平台档位
-        final = normalize(current, workdir / "03_final.mp4", profile=ctx["profile"])
+        silence = float(ctx.get("silence") or 0)
+        image_local = ctx.get("image_local")
+        still_head = bool(ctx.get("still_head")) and silence > 0
+        if still_head and image_local and Path(image_local).is_file():
+            current = normalize(current, workdir / "03_normalized.mp4", profile=ctx["profile"])
+            _log(f"[{recipe.key}] 静帧替换开头 {silence:g}s（去掉模型演的吸气）")
+            final = replace_silent_head(
+                current, image_local, workdir / "03_final.mp4", silence)
+            record["normalized"] = str(current)
+            record["still_head"] = True
+        else:
+            if still_head and not (image_local and Path(str(image_local)).is_file()):
+                _log(f"[{recipe.key}] 跳过静帧替换：需要本地角色图")
+            final = normalize(current, workdir / "03_final.mp4", profile=ctx["profile"])
+            record["still_head"] = False
         record["final"] = str(final)
         record["final_probe"] = probe(final)
 
@@ -400,7 +430,7 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
         record["compliance_passed"] = report.passed
         record["compliance"] = [{"name": c.name, "ok": c.ok, "detail": c.detail}
                                 for c in report.checks]
-        _log(f"[{recipe.key}] 入库校验 {'通过' if report.passed else '不通过'}")
+        _log_compliance(recipe.key, report, ctx["profile"])
 
         if ctx["analyze"]:
             record["stability"] = _analyze(final)
@@ -455,7 +485,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if floor and actual + args.silence < floor:
             _log(f"警告：成片将只有 {actual + args.silence:.1f}s，"
                  f"短于 {args.profile} 要求的 {floor:g}s，平台会退料。"
-                 f"台词再加约 {int((floor - actual - args.silence) * 4.5)} 字")
+                 f"台词再加约 {int((floor - actual - args.silence) * tts.CHARS_PER_SECOND)} 字")
 
     # 音频加静默头，再据此算真实时长与成本
     if audio_path and args.silence > 0:
@@ -506,10 +536,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             _log(f"上传{kind}：{Path(src).name if not str(src).startswith('http') else src}")
             urls[kind] = wsclient.upload(src)
 
+    image_local = args.image if args.image and not str(args.image).startswith("http") else None
     ctx = {
         "outdir": outdir, "prompt": _read_prompt(args), "seed": args.seed,
         "timeout": args.timeout, "interval": args.interval, "profile": args.profile,
         "upscaler": upscaler, "seconds": seconds, "analyze": not args.no_analyze,
+        "silence": args.silence, "still_head": args.still_head,
+        "image_local": image_local,
     }
 
     records = []
@@ -525,7 +558,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     manifest = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "inputs": {"image": args.image, "audio": audio_path, "video": args.video,
-                   "prompt": ctx["prompt"], "seconds": seconds},
+                   "prompt": ctx["prompt"], "seconds": seconds,
+                   "silence": args.silence, "still_head": args.still_head},
         "profile": args.profile, "upscale": args.upscale,
         "records": records,
     }
@@ -638,6 +672,9 @@ def main() -> int:
                    help="用于成本估算的时长，默认按音频实际时长")
     p.add_argument("--silence", type=float, default=2.0,
                    help="给音频加几秒静默头，满足腾讯「开头闭口 1-3 秒」；0 表示不加")
+    p.add_argument("--still-head", action=argparse.BooleanOptionalAction, default=True,
+                   help="生成后把静默头画面换成角色图静止帧，去掉模型演的「深吸一口气」；"
+                        "--no-still-head 关闭")
     p.add_argument("--profile", default="tencent-general",
                    help="入库档位，见 compliance.py")
     p.add_argument("--upscale", default="up-bytedance",

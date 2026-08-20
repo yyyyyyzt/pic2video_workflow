@@ -3,9 +3,11 @@
 
 分两头用：
 
-  生成前  给驱动音频加静默头。腾讯要求「开头静默闭口 1-3 秒」，而口型是跟着音频
-          走的，所以只要在音频前面接一段静音，生成出来的视频开头人物自然就是闭嘴的。
-          这比事后剪一段静止帧干净得多（平台还要求全程无剪辑无跳帧）。
+  生成前  给驱动音频加静默头。腾讯要求「开头静默闭口 1-3 秒」，口型跟着音频走，
+          所以音频前面接静音，成片开头才是不说话的。
+          但模型在静音段经常演「深吸一口气再开口」，看起来很假。
+          所以生成后会把静音对应的那几秒画面，换成角色参考图的静止帧
+          （嘴唇状态跟你给的照片一致），音轨不动、时长不变。
 
   生成后  把成片改造成平台收得下的规格：补边到精确 16:9 / 9:16、重采样帧率、
           转 mp4/H.264。生成模型常见的 480×832（比例 1.733）和 25fps 都不达标。
@@ -59,6 +61,52 @@ def prepend_silence(audio: str | Path, output: str | Path, seconds: float = 2.0)
          "-map", "[out]", "-c:a", "libmp3lame", "-q:a", "2", str(out)],
         f"给 {src.name} 加 {seconds}s 静默头",
     )
+    return out
+
+
+def replace_silent_head(video: str | Path, image: str | Path, output: str | Path,
+                        seconds: float, crf: int = 17) -> Path:
+    """把视频开头的静音秒数换成角色图静止帧，用来去掉「深吸一口气再说话」。
+
+    音轨原样保留，口型对齐不漂。画面在静音结束处接到生成画面；
+    若角色图和生成姿势差太大，接缝处会有轻微跳变，但比演一段吸气自然得多。
+    """
+    src, img, out = Path(video), Path(image), Path(output)
+    if not img.is_file():
+        raise ComplianceError(f"找不到角色图 {img}，无法替换静默头")
+    info = probe(src)
+    if info["duration"] <= seconds + 0.08:
+        raise ComplianceError(
+            f"视频只有 {info['duration']:.1f}s，不够切掉开头 {seconds:g}s 静默段"
+        )
+
+    w, h, fps = info["width"], info["height"], info["fps"]
+    vf_still = (f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"fps={fps},setsar=1,format=yuv420p")
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-loop", "1", "-framerate", f"{fps}", "-t", f"{seconds:.3f}", "-i", str(img),
+        "-i", str(src),
+        "-filter_complex",
+        f"[0:v]{vf_still},setpts=PTS-STARTPTS[still];"
+        f"[1:v]trim=start={seconds:.3f},setpts=PTS-STARTPTS[tail];"
+        f"[still][tail]concat=n=2:v=1:a=0[v]",
+        "-map", "[v]",
+    ]
+    if info.get("has_audio"):
+        cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"]
+    else:
+        cmd += ["-an"]
+    cmd += [
+        "-r", f"{fps}",
+        "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        "-shortest", str(out),
+    ]
+    _run(cmd, f"用 {img.name} 替换开头 {seconds:g}s 画面")
     return out
 
 
@@ -178,6 +226,12 @@ def _cli() -> None:
     p_mux.add_argument("audio")
     p_mux.add_argument("-o", "--output", required=True)
 
+    p_still = sub.add_parser("still-head", help="把开头静默秒数换成角色图静止帧（去掉吸气预备）")
+    p_still.add_argument("video")
+    p_still.add_argument("image")
+    p_still.add_argument("-o", "--output", required=True)
+    p_still.add_argument("--seconds", type=float, default=2.0)
+
     args = parser.parse_args()
     try:
         if args.cmd == "silence":
@@ -194,6 +248,11 @@ def _cli() -> None:
             print(f"已生成 {out}（{probe(out)['duration']:.1f}s）")
         elif args.cmd == "mux":
             print(f"已生成 {mux_audio(args.video, args.audio, args.output)}")
+        elif args.cmd == "still-head":
+            out = replace_silent_head(args.video, args.image, args.output, args.seconds)
+            info = probe(out)
+            print(f"已生成 {out}（{info['width']}×{info['height']} "
+                  f"{info['fps']:g}fps {info['duration']:.1f}s）")
     except ComplianceError as exc:
         raise SystemExit(f"错误：{exc}")
 
