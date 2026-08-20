@@ -24,11 +24,16 @@
 所以 `avatar_lab.py` 跑的不是单纯的「生成」，而是完整一条：
 
 ```
-上传素材 → 生成 → 超分到 1080p → 规范化(比例/帧率/容器)
-→ 静帧替换静默头 → 入库合规校验 → 抖动指标 → 汇总排名
+上传素材 → 生成 → （可选）超分到 1080p → 规范化(比例/帧率/容器) → 入库合规校验 → 汇总
 ```
 
-`入库校验`是本地预检腾讯/阿里「系统检测」的硬指标（时长、短边、比例、帧率、封装、文件大小、开头 2 秒音量 ≤ -45dB），**不是生成失败**。10 秒筛选成片过不了 60 秒门槛，这是故意的；实时日志现在会逐条打出未过项。
+10 秒筛选不要一条条改参数。内置矩阵一次跑完所有组合，对照页里逐条看：
+
+```bash
+python3 avatar_lab.py sweep --image face.jpg
+```
+
+`入库校验`是本地预检腾讯/阿里「系统检测」的硬指标（时长、短边、比例、帧率、封装、文件大小、开头 2 秒音量 ≤ -45dB），**不是生成失败**。10 秒筛选成片过不了 60 秒门槛，这是故意的；实时日志会逐条打出未过项。
 
 ## 平台入库硬指标
 
@@ -147,31 +152,44 @@ python3 avatar_lab.py run --recipes screen --image face.jpg \
     --script-file prompts/tencent_general_script_10s.txt
 ```
 
-### 第 3 步：用 10 秒音频筛方案（约 $0.3~2）
+### 第 3 步：一条命令跑完 10 秒对比试验
 
-**不要一上来就跑 60 秒。** 组合名 `screen` = SkyReels 标准 + InfiniteTalk 快速 + OmniHuman 1.5。
+不要再手工改 `--recipes` / `--silence` / `--prompt-file`。默认矩阵 `screen10` 会交叉：
+
+| 轴 | 取值 |
+| :-- | :-- |
+| 模型 | SkyReels 标准、InfiniteTalk 快速、OmniHuman 1.5 |
+| 静默头 | 2s（平台目标，先跑）、1s、3s |
+| 提示词 | `alive`（静默时眨眼微动）、`strict`（更克制） |
+
+共 18 条约 10 秒视频。音色固定 `seed:felix_zh`，台词固定 10 秒筛选稿，**不做静止帧替换、不超分**——这次要看的是模型自己怎么演开头。
 
 ```bash
-python3 avatar_lab.py plan --seconds 10 --recipes screen
+python3 avatar_lab.py sweep --list
+python3 avatar_lab.py sweep --image face.jpg --dry-run   # 只看格子和成本
+python3 avatar_lab.py sweep --image face.jpg             # 开跑
+```
 
+跑完用浏览器打开 `data/lab/sweep-screen10/index.html`。页面上每条都有视频和开头 0.3/1/2/3 秒抽帧，可按模型/静默/提示词筛选。
+中途余额不够或失败，同样命令再跑会跳过已完成的格子。
+
+想先只看三个模型本身（3 条，静默 2s + alive）：
+
+```bash
+python3 avatar_lab.py sweep --image face.jpg --matrix screen10-models
+```
+
+对照时重点看：开头有没有深吸气、会不会眨眼、开口是不是从闭嘴直接开始、像不像本人。
+挑几条满意的，把格子名（如 `01-skyreels-std_sil2_alive`）或日志贴回来再收窄。
+
+单条复跑仍可用 `run`（给 60 秒赢家用）：
+
+```bash
 python3 avatar_lab.py run --recipes screen \
     --image face.jpg \
     --script-file prompts/tencent_general_script_10s.txt \
-    --prompt-file prompts/tencent_general_prompt.txt \
-    --profile tencent-general \
     --outdir data/lab/screen10s
 ```
-
-不传 `--prompt-file` 时，会自动用 `prompts/tencent_general_prompt.txt`
-（正视镜头、固定机位、手不挡脸——逐条对应腾讯录制指引）。
-
-跑完看汇总表，然后**一定要用眼睛看一遍** `data/lab/screen10s/*/03_final.mp4`，
-重点看：像不像本人、牙齿和嘴部有没有糊、有没有色偏。指标只能判稳定性，判不了像不像。
-10 秒成片过不了 60 秒入库门槛，这是故意的；日志会写「这是 10s 筛选轮次的预期结果」。
-
-开头 2 秒静默是平台要求（`--silence 2`），但模型常把静音段演成「深吸一口气」。
-流水线默认会把这 2 秒画面换成角色图静止帧（`--still-head`，音轨不动）。
-角色图请用**嘴巴闭合**的正面照。不想换画面就加 `--no-still-head`。
 
 ### 第 4 步：赢家跑完整 60 秒（约 $1.5~3）
 
@@ -248,7 +266,8 @@ python3 moarkclient.py probe InfiniteTalk --image <url> --audio <url>
 | `avatar_lab.py balance` | 查余额 |
 | `avatar_lab.py list [--seconds N]` | 列出全部方案与成本 |
 | `avatar_lab.py plan --recipes ... --seconds N` | 估算成本，不花钱 |
-| `avatar_lab.py run --recipes ...` | 跑实验（完整流水线） |
+| `avatar_lab.py sweep --image face.jpg` | **10 秒参数矩阵，一次跑完对照试验** |
+| `avatar_lab.py run --recipes ...` | 跑单组实验（完整流水线，给 60 秒赢家用） |
 | `avatar_lab.py report <目录>` | 重新汇总已有结果 |
 | `avatar_lab.py tts` | 合成驱动音频（默认 10 秒筛选稿） |
 | `tts.py --list-voices` | 列出中文音色 |
@@ -268,9 +287,9 @@ python3 moarkclient.py probe InfiniteTalk --image <url> --audio <url>
 - **阿里云要求 ≥30fps，而多数模型输出 25fps**，必须重采样，腾讯的 25–60fps 则不用。
 - **超分不是免费的**。60 秒 $0.60，虽然便宜但不是可忽略；原生 1080p 的方案
   （`ltx-lipsync`、`silent-seedance-1080`）会自动跳过这一步。
-- **开头静默会被模型演成吸气**。给音频加 2 秒静音后，SkyReels / InfiniteTalk 一类模型
-  经常在开口前深吸一口气、耸肩提气。静音本身要留（平台卡前 2 秒音量），但画面用
-  `mediaprep.py still-head` 换成角色图静止帧。`run` 默认开启。
+- **开头静默会被模型演成吸气**。给音频加 1–3 秒静音后，模型常在开口前深吸气。
+  不要用静止帧去盖（不眨眼、很呆）。用 `sweep` 交叉「模型 × 静默时长 × 提示词」，
+  看哪一组能在静默时眨眼、开口时不吸气。`--still-head` 仍可手动打开，默认关。
 - **Bronze 账号限流 5 次/分钟、2 个并发**，方案是串行跑的，别改成并发。
 
 ---

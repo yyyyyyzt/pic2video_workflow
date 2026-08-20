@@ -5,9 +5,9 @@
 
   生成前  给驱动音频加静默头。腾讯要求「开头静默闭口 1-3 秒」，口型跟着音频走，
           所以音频前面接静音，成片开头才是不说话的。
-          但模型在静音段经常演「深吸一口气再开口」，看起来很假。
-          所以生成后会把静音对应的那几秒画面，换成角色参考图的静止帧
-          （嘴唇状态跟你给的照片一致），音轨不动、时长不变。
+          模型常把静音段演成「深吸一口气」。不要用静止帧去盖——会不眨眼、很呆。
+          正确做法是换提示词/静默时长/模型，用 sweep 矩阵对照着看。
+          replace_silent_head 仍保留，仅在显式 --still-head 时启用。
 
   生成后  把成片改造成平台收得下的规格：补边到精确 16:9 / 9:16、重采样帧率、
           转 mp4/H.264。生成模型常见的 480×832（比例 1.733）和 25fps 都不达标。
@@ -108,6 +108,27 @@ def replace_silent_head(video: str | Path, image: str | Path, output: str | Path
     ]
     _run(cmd, f"用 {img.name} 替换开头 {seconds:g}s 画面")
     return out
+
+
+def snapshot_frames(video: str | Path, outdir: str | Path,
+                    times: tuple[float, ...] = (0.3, 1.0, 2.0, 3.0)) -> list[Path]:
+    """抽开头几帧，方便对照「有没有吸气、有没有眨眼」，不用把每条视频从头看完。"""
+    src, dest = Path(video), Path(outdir)
+    dest.mkdir(parents=True, exist_ok=True)
+    info = probe(src)
+    duration = info["duration"]
+    paths: list[Path] = []
+    for t in times:
+        if t >= duration:
+            continue
+        out = dest / f"t{t:g}s.jpg"
+        _run(
+            ["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", str(src),
+             "-frames:v", "1", "-q:v", "3", str(out)],
+            f"抽 {src.name} @ {t:g}s",
+        )
+        paths.append(out)
+    return paths
 
 
 def normalize(video: str | Path, output: str | Path, *, profile: str = "tencent-general",

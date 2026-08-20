@@ -4,8 +4,14 @@
 它解决的不是「生成一条视频」，而是「在十几个候选模型里挑出哪个能过平台入库」。
 所以每个方案跑完都会自动走完整条流水线：
 
-    上传素材 → 生成 → 超分到 1080p → 规范化(比例/帧率/容器)
-    → 静帧替换静默头（去掉模型演的吸气）→ 入库合规校验 → 抖动指标
+    上传素材 → 生成 → （可选）超分到 1080p → 规范化(比例/帧率/容器) → 入库合规校验
+
+10 秒筛选不要一条条改参数。用参数矩阵一次跑完所有组合：
+
+    python3 avatar_lab.py sweep --image face.jpg
+
+默认矩阵 screen10 = 3 个模型 × 3 档静默 × 2 条提示词。开头静默靠音频，
+不要用静止帧替换（会不眨眼）。看完 data/lab/sweep-screen10/index.html 对照即可。
 
 最后汇总成一张表，用客观数字排序，而不是靠肉眼感觉。
 
@@ -13,8 +19,7 @@
     python3 avatar_lab.py balance
     python3 tts.py --list-voices
     python3 tts.py --script-file prompts/tencent_general_script_10s.txt -o speech_10s.mp3 --silence 2
-    python3 avatar_lab.py run --recipes screen --image face.jpg \\
-        --script-file prompts/tencent_general_script_10s.txt
+    python3 avatar_lab.py sweep --image face.jpg
     python3 avatar_lab.py run --recipes omnihuman-15 --image face.jpg \\
         --script-file prompts/tencent_general_script_60s.txt
 """
@@ -359,12 +364,15 @@ def _billed(fn, model_id: str, seconds: float) -> tuple[dict, float]:
 def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
     """跑单个方案的完整流水线，返回结果记录。"""
     from compliance import ComplianceError, check, probe
-    from mediaprep import normalize, replace_silent_head
+    from mediaprep import normalize, replace_silent_head, snapshot_frames
 
-    workdir: Path = ctx["outdir"] / recipe.key
+    cell_id = ctx.get("cell_id") or recipe.key
+    log_key = ctx.get("log_key") or recipe.key
+    workdir: Path = ctx["outdir"] / cell_id
     workdir.mkdir(parents=True, exist_ok=True)
     record: dict = {"recipe": recipe.key, "label": recipe.label, "route": recipe.route,
-                    "model": recipe.model, "started_at": datetime.now().isoformat(timespec="seconds")}
+                    "model": recipe.model, "cell_id": cell_id,
+                    "started_at": datetime.now().isoformat(timespec="seconds")}
     t0 = time.time()
 
     try:
@@ -373,12 +381,12 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
             image_url=urls.get("image", ""), audio_url=urls.get("audio", ""),
             video_url=urls.get("video", ""), prompt=ctx["prompt"], seed=ctx["seed"],
         )
-        _log(f"[{recipe.key}] 提交 {recipe.model}")
+        _log(f"[{log_key}] 提交 {recipe.model}")
         billable = recipe.billable_seconds(ctx["seconds"])
         result, gen_cost = _billed(
             lambda: wsclient.run(recipe.model, payload, timeout=ctx["timeout"],
                                  interval=ctx["interval"],
-                                 on_tick=lambda s, e: _log(f"[{recipe.key}]   {s} ({e}s)")),
+                                 on_tick=lambda s, e: _log(f"[{log_key}]   {s} ({e}s)")),
             recipe.model, billable)
         record["prediction_id"] = result["prediction_id"]
         record["cost_generate"] = gen_cost
@@ -386,7 +394,7 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
         raw = wsclient.download(result["outputs"][0], workdir / "01_raw.mp4")
         record["raw"] = str(raw)
         record["raw_probe"] = probe(raw)
-        _log(f"[{recipe.key}] 生成完成 {record['raw_probe']['width']}×"
+        _log(f"[{log_key}] 生成完成 {record['raw_probe']['width']}×"
              f"{record['raw_probe']['height']} {record['raw_probe']['duration']:.1f}s"
              f"，实际扣费 ${gen_cost:.4f}")
 
@@ -396,7 +404,7 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
         # 超分：原生 1080p 的方案跳过，避免白花钱和二次劣化
         upscaler: Recipe | None = ctx["upscaler"]
         if upscaler and not recipe.native_1080p and recipe.route != "U":
-            _log(f"[{recipe.key}] 超分 {upscaler.model}")
+            _log(f"[{log_key}] 超分 {upscaler.model}")
             up_url = wsclient.upload(current)
             up_payload = dict(upscaler.params, video=up_url)
             up, up_cost = _billed(
@@ -407,30 +415,34 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
             record["upscaled"] = str(current)
             record["cost_upscale"] = up_cost
 
-        # 规范化到平台档位
+        # 规范化到平台档位。静止帧替换默认关闭：会不眨眼、开头很呆。
         silence = float(ctx.get("silence") or 0)
         image_local = ctx.get("image_local")
         still_head = bool(ctx.get("still_head")) and silence > 0
         if still_head and image_local and Path(image_local).is_file():
             current = normalize(current, workdir / "03_normalized.mp4", profile=ctx["profile"])
-            _log(f"[{recipe.key}] 静帧替换开头 {silence:g}s（去掉模型演的吸气）")
+            _log(f"[{log_key}] 静帧替换开头 {silence:g}s（显式开启，画面会冻住）")
             final = replace_silent_head(
                 current, image_local, workdir / "03_final.mp4", silence)
             record["normalized"] = str(current)
             record["still_head"] = True
         else:
-            if still_head and not (image_local and Path(str(image_local)).is_file()):
-                _log(f"[{recipe.key}] 跳过静帧替换：需要本地角色图")
             final = normalize(current, workdir / "03_final.mp4", profile=ctx["profile"])
             record["still_head"] = False
         record["final"] = str(final)
         record["final_probe"] = probe(final)
 
+        try:
+            thumbs = snapshot_frames(final, workdir / "thumbs")
+            record["thumbs"] = [str(p) for p in thumbs]
+        except ComplianceError as exc:
+            _log(f"[{log_key}] 抽帧失败：{exc}")
+
         report = check(final, ctx["profile"])
         record["compliance_passed"] = report.passed
         record["compliance"] = [{"name": c.name, "ok": c.ok, "detail": c.detail}
                                 for c in report.checks]
-        _log_compliance(recipe.key, report, ctx["profile"])
+        _log_compliance(log_key, report, ctx["profile"])
 
         if ctx["analyze"]:
             record["stability"] = _analyze(final)
@@ -441,7 +453,7 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
     except (wsclient.WaveSpeedError, ComplianceError, ValueError) as exc:
         record["status"] = "failed"
         record["error"] = str(exc)
-        _log(f"[{recipe.key}] 失败：{exc}")
+        _log(f"[{log_key}] 失败：{exc}")
 
     record["elapsed_seconds"] = round(time.time() - t0, 1)
     (workdir / "record.json").write_text(
@@ -579,25 +591,326 @@ def cmd_run(args: argparse.Namespace) -> int:
 def _summarize(records: list[dict]) -> str:
     rows = []
     for r in records:
+        name = r.get("cell_id") or r.get("recipe") or "?"
         if r.get("status") != "ok":
-            rows.append([r["recipe"], r.get("status", "?"), "-", "-", "-", "-",
+            rows.append([name, r.get("status", "?"), "-", "-", "-", "-",
                          (r.get("error", "") or "")[:40]])
             continue
         p = r.get("final_probe", {})
         st = r.get("stability", {})
+        extra = f"p99={st['accel_p99']:.2f}" if "accel_p99" in st else "-"
+        extra += f" {r.get('elapsed_seconds', 0):.0f}s"
+        if r.get("prompt_key") or r.get("silence") is not None:
+            extra = f"sil={r.get('silence', '-')} {r.get('prompt_key', '')} {extra}"
         rows.append([
-            r["recipe"],
+            name,
             "通过" if r.get("compliance_passed") else "不通过",
             f"{p.get('width')}×{p.get('height')}",
             f"{p.get('fps', 0):g}fps",
             f"{p.get('duration', 0):.0f}s",
             f"${r.get('cost_actual', 0):.3f}",
-            (f"p99={st['accel_p99']:.2f}" if "accel_p99" in st else "-") +
-            f" {r.get('elapsed_seconds', 0):.0f}s",
+            extra,
         ])
     total = sum(r.get("cost_actual", 0) for r in records)
     table = _table(["方案", "入库", "分辨率", "帧率", "时长", "成本(实测)", "抖动p99/耗时"], rows)
     return f"{table}\n\n实际总花费 ${total:.3f}"
+
+
+def _rel(path: str | Path, root: Path) -> str:
+    try:
+        return Path(path).resolve().relative_to(root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return Path(path).as_posix()
+
+
+def _write_sweep_index(outdir: Path, matrix, cells, records: list[dict],
+                       *, image: str, voice: str) -> Path:
+    """写一个本地就能打开的对照页：视频 + 开头抽帧 + 参数。"""
+    by_id = {r.get("cell_id"): r for r in records}
+    cards = []
+    for cell in cells:
+        rec = by_id.get(cell.id) or {}
+        status = rec.get("status", "pending")
+        video = rec.get("final") or rec.get("raw") or ""
+        thumbs = rec.get("thumbs") or []
+        err = rec.get("error") or ""
+        cost = rec.get("cost_actual")
+        probe = rec.get("final_probe") or rec.get("raw_probe") or {}
+        thumb_html = "".join(
+            f'<img src="{_rel(t, outdir)}" alt="{Path(t).stem}">' for t in thumbs
+        )
+        video_html = (
+            f'<video controls preload="metadata" src="{_rel(video, outdir)}"></video>'
+            if video and Path(video).is_file() else
+            f'<div class="miss">{err or status}</div>'
+        )
+        cost_s = f"${cost:.3f}" if isinstance(cost, (int, float)) else "-"
+        spec = ""
+        if probe:
+            spec = (f"{probe.get('width', '?')}×{probe.get('height', '?')} "
+                    f"{probe.get('duration', 0):.1f}s")
+        cards.append(f"""
+<article class="card {status}" data-recipe="{cell.recipe}" data-silence="{cell.silence:g}" data-prompt="{cell.prompt_key}">
+  <header>
+    <strong>{cell.id}</strong>
+    <span class="pill">{cell.recipe}</span>
+    <span class="pill">静默 {cell.silence:g}s</span>
+    <span class="pill">{cell.prompt_key}</span>
+    <span class="pill">{status}</span>
+  </header>
+  {video_html}
+  <div class="thumbs">{thumb_html}</div>
+  <p class="meta">{spec}　{cost_s}{"　" + err if err else ""}</p>
+</article>""")
+
+    body = "\n".join(cards)
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>sweep {matrix.key}</title>
+<style>
+  body {{ font: 14px/1.45 system-ui, sans-serif; background: #111; color: #eee; margin: 0; }}
+  header.page {{ padding: 20px 24px 8px; }}
+  .filters {{ padding: 0 24px 16px; display: flex; gap: 12px; flex-wrap: wrap; }}
+  .filters label {{ opacity: .8; }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; padding: 0 24px 40px; }}
+  .card {{ background: #1c1c1c; border-radius: 10px; padding: 12px; border: 1px solid #333; }}
+  .card.failed {{ border-color: #833; }}
+  .card.pending {{ opacity: .55; }}
+  .card header {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }}
+  .pill {{ font-size: 12px; background: #2a2a2a; padding: 2px 8px; border-radius: 999px; }}
+  video {{ width: 100%; border-radius: 8px; background: #000; }}
+  .thumbs {{ display: flex; gap: 4px; margin-top: 8px; }}
+  .thumbs img {{ width: 25%; border-radius: 4px; }}
+  .meta {{ color: #aaa; font-size: 12px; margin: 8px 0 0; }}
+  .miss {{ padding: 40px 12px; text-align: center; color: #888; }}
+  .note {{ color: #bbb; max-width: 70ch; }}
+</style>
+</head>
+<body>
+<header class="page">
+  <h1>{matrix.label}</h1>
+  <p class="note">对照时重点看开头 3 秒：有没有深吸气、会不会眨眼、开口是否直接从闭嘴开始。
+  满意的几条把目录名或日志贴回来即可。音色 {voice}，角色图 {Path(image).name}。
+  抽帧从左到右大约是 0.3s / 1s / 2s / 3s。</p>
+</header>
+<div class="filters">
+  <label>模型 <select id="f-recipe"><option value="">全部</option></select></label>
+  <label>静默 <select id="f-silence"><option value="">全部</option></select></label>
+  <label>提示词 <select id="f-prompt"><option value="">全部</option></select></label>
+</div>
+<section class="grid">
+{body}
+</section>
+<script>
+const keys = ["recipe", "silence", "prompt"];
+for (const key of keys) {{
+  const sel = document.getElementById("f-" + key);
+  const vals = [...new Set([...document.querySelectorAll(".card")].map(c => c.dataset[key]))];
+  for (const v of vals) {{
+    const o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o);
+  }}
+  sel.addEventListener("change", apply);
+}}
+function apply() {{
+  const f = Object.fromEntries(keys.map(k => [k, document.getElementById("f-" + k).value]));
+  for (const c of document.querySelectorAll(".card")) {{
+    c.style.display = keys.every(k => !f[k] || c.dataset[k] === f[k]) ? "" : "none";
+  }}
+}}
+</script>
+</body>
+</html>
+"""
+    path = outdir / "index.html"
+    path.write_text(html, encoding="utf-8")
+    return path
+
+
+def _list_matrices() -> int:
+    from matrices import MATRICES, expand
+    rows = []
+    for mx in MATRICES.values():
+        n = len(expand(mx))
+        rows.append([
+            mx.key, mx.label, str(n),
+            ",".join(mx.recipes),
+            ",".join(f"{s:g}s" for s in mx.silences),
+            ",".join(mx.prompts),
+        ])
+    print(_table(["矩阵", "说明", "格子", "模型", "静默", "提示词"], rows))
+    print("\n一条命令跑默认矩阵（10 秒完整对比）：")
+    print("  python3 avatar_lab.py sweep --image face.jpg")
+    return 0
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """按写死的参数矩阵跑完所有组合，产出对照页。"""
+    from mediaprep import audio_duration, prepend_silence
+    from matrices import expand, read_prompt, recipes_of, resolve_matrix
+    import tts
+
+    if args.list_matrices:
+        return _list_matrices()
+
+    mx = resolve_matrix(args.matrix)
+    cells = expand(mx)
+    picked = recipes_of(mx)
+    by_key = {r.key: r for r in picked}
+
+    dummy_seconds = 11.0
+    per_recipe = {r.key: _cost_of(r, dummy_seconds)[0] for r in picked}
+    est = sum(per_recipe[c.recipe] for c in cells)
+    print(f"矩阵 {mx.key}：{mx.label}")
+    print(f"  {mx.note}")
+    print(f"  {len(cells)} 个格子 = {len(mx.recipes)} 模型 × {len(mx.silences)} 静默 × {len(mx.prompts)} 提示词")
+    print(f"  台词 {mx.script_file}　音色 {mx.voice}　超分 {'关' if not mx.upscale else mx.upscale}")
+    print(f"  静止帧替换：关（开头要能眨眼）")
+    print(f"  预估生成成本约 ${est:.2f}（不含 TTS，按约 11s 粗估）")
+    rows = [[f"{c.index:02d}", c.id, c.recipe, f"{c.silence:g}s", c.prompt_key,
+             f"${per_recipe[c.recipe]:.2f}"] for c in cells]
+    print()
+    print(_table(["#", "格子", "模型", "静默", "提示词", "估成本"], rows))
+
+    if args.dry_run:
+        outdir = Path(args.outdir or DEFAULT_OUTDIR / f"sweep-{mx.key}")
+        print(f"\n--dry-run，实际会写到 {outdir}")
+        return 0
+
+    if not args.image:
+        print("错误：sweep 需要 --image（角色图本地路径）")
+        print("  python3 avatar_lab.py sweep --image face.jpg")
+        return 1
+    image_path = Path(args.image)
+    if not str(args.image).startswith("http") and not image_path.is_file():
+        print(f"错误：找不到角色图 {args.image}")
+        return 1
+
+    outdir = Path(args.outdir or DEFAULT_OUTDIR / f"sweep-{mx.key}")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        bal = wsclient.balance()
+        print(f"\n当前余额 ${bal:.2f}")
+        if est > bal and not args.yes:
+            print(f"预估超过余额。可先跑 python3 avatar_lab.py sweep --image {args.image} --matrix screen10-models")
+            print("余额够了再原命令续跑（已完成的格子会跳过）。")
+            return 1
+    except wsclient.WaveSpeedError as exc:
+        print(f"  余额查询失败：{exc}")
+
+    # TTS 只合成一次，再按静默档位垫音频
+    audio_dir = outdir / "audio"
+    audio_dir.mkdir(exist_ok=True)
+    existing_tts = sorted(audio_dir.glob("tts_raw.*"))
+    if existing_tts:
+        raw_audio = existing_tts[0]
+        _log(f"复用已有 TTS {raw_audio}")
+    else:
+        text = tts.read_script(mx.script_file)
+        est_s = tts.estimate_seconds(text, mx.tts_speed)
+        _log(f"合成台词：{len(text)} 字，预计约 {est_s:.0f} 秒，音色 {mx.voice}")
+        synth, tts_cost = tts.synthesize(
+            text, audio_dir / "tts_raw.mp3", voice=mx.voice,
+            speed=mx.tts_speed, emotion=mx.tts_emotion,
+            on_tick=lambda s, e: _log(f"  TTS {s} ({e}s)"))
+        raw_audio = synth
+        _log(f"TTS 完成 {audio_duration(raw_audio):.1f}s，扣费 ${tts_cost:.4f}")
+
+    padded: dict[float, Path] = {}
+    for sil in mx.silences:
+        dest = audio_dir / f"padded_{sil:g}s.mp3"
+        if sil <= 0:
+            padded[sil] = raw_audio
+            continue
+        if dest.is_file():
+            padded[sil] = dest
+            continue
+        padded[sil] = prepend_silence(raw_audio, dest, sil)
+        _log(f"静默头 {sil:g}s → {dest.name}")
+
+    # 素材上传一次，按静默档复用 URL
+    _log(f"上传 image：{Path(args.image).name if not str(args.image).startswith('http') else args.image}")
+    image_url = wsclient.upload(args.image)
+    audio_urls: dict[float, str] = {}
+    for sil, path in padded.items():
+        _log(f"上传 audio：{path.name}")
+        audio_urls[sil] = wsclient.upload(path)
+
+    upscaler = RECIPES[mx.upscale] if mx.upscale else None
+    image_local = args.image if args.image and not str(args.image).startswith("http") else None
+
+    records: list[dict] = []
+    manifest_path = outdir / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            prev = json.loads(manifest_path.read_text(encoding="utf-8"))
+            records = list(prev.get("records") or [])
+        except ValueError:
+            records = []
+    known = {r.get("cell_id"): r for r in records if r.get("cell_id")}
+
+    total_cells = len(cells)
+    for i, cell in enumerate(cells, 1):
+        existing = known.get(cell.id)
+        rec_file = outdir / cell.id / "record.json"
+        if rec_file.is_file():
+            try:
+                existing = json.loads(rec_file.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+        if existing and existing.get("status") == "ok" and not args.force:
+            _log(f"[{i}/{total_cells} {cell.id}] 已完成，跳过")
+            known[cell.id] = existing
+            continue
+
+        recipe = by_key[cell.recipe]
+        seconds = audio_duration(padded[cell.silence])
+        ctx = {
+            "outdir": outdir, "prompt": read_prompt(cell.prompt_key), "seed": args.seed,
+            "timeout": args.timeout, "interval": args.interval, "profile": mx.profile,
+            "upscaler": upscaler, "seconds": seconds, "analyze": False,
+            "silence": cell.silence, "still_head": False, "image_local": image_local,
+            "cell_id": cell.id, "log_key": f"{i}/{total_cells} {cell.id}",
+        }
+        urls = {"image": image_url, "audio": audio_urls[cell.silence]}
+        _log(f"[{i}/{total_cells} {cell.id}] 开始  {cell.recipe}  静默{cell.silence:g}s  {cell.prompt_key}")
+        rec = _run_one(recipe, urls, ctx)
+        rec["cell_id"] = cell.id
+        rec["silence"] = cell.silence
+        rec["prompt_key"] = cell.prompt_key
+        rec["prompt_file"] = cell.prompt_file
+        known[cell.id] = rec
+
+        records = [known.get(c.id, {"cell_id": c.id, "status": "pending"}) for c in cells]
+        manifest = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "matrix": mx.key,
+            "inputs": {"image": args.image, "voice": mx.voice, "script": mx.script_file},
+            "cells": [cell.__dict__ for cell in cells],
+            "records": records,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+        index = _write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
+        _log(f"对照页已更新 {index}")
+
+    records = [known.get(c.id, {"cell_id": c.id, "status": "pending"}) for c in cells]
+    index = _write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
+    ok_n = sum(1 for r in records if r.get("status") == "ok")
+    fail_n = sum(1 for r in records if r.get("status") == "failed")
+    spent = sum(r.get("cost_actual", 0) or 0 for r in records)
+    print()
+    print(_summarize(records))
+    print(f"\n完成 {ok_n}/{len(cells)}，失败 {fail_n}，本矩阵实测约 ${spent:.3f}")
+    print(f"对照页：{index}")
+    print("用浏览器打开上面的 html，逐条看开头 3 秒。满意的格子名贴回来即可。")
+    try:
+        print(f"剩余余额：${wsclient.balance():.4f}")
+    except wsclient.WaveSpeedError:
+        pass
+    return 0 if fail_n == 0 else 1
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -672,9 +985,9 @@ def main() -> int:
                    help="用于成本估算的时长，默认按音频实际时长")
     p.add_argument("--silence", type=float, default=2.0,
                    help="给音频加几秒静默头，满足腾讯「开头闭口 1-3 秒」；0 表示不加")
-    p.add_argument("--still-head", action=argparse.BooleanOptionalAction, default=True,
-                   help="生成后把静默头画面换成角色图静止帧，去掉模型演的「深吸一口气」；"
-                        "--no-still-head 关闭")
+    p.add_argument("--still-head", action=argparse.BooleanOptionalAction, default=False,
+                   help="生成后把静默头画面换成角色图静止帧。默认关闭：会不眨眼、很呆。"
+                        "显式 --still-head 才开启")
     p.add_argument("--profile", default="tencent-general",
                    help="入库档位，见 compliance.py")
     p.add_argument("--upscale", default="up-bytedance",
@@ -711,6 +1024,21 @@ def main() -> int:
     p = sub.add_parser("report", help="重新汇总已有结果目录")
     p.add_argument("outdir")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("sweep", help="按参数矩阵一次跑完所有组合（10 秒对比试验）")
+    p.add_argument("--image", help="角色图（本地路径）。对照试验的固定输入")
+    p.add_argument("--matrix", default="screen10",
+                   help="矩阵名，默认 screen10。--list 查看")
+    p.add_argument("--list", dest="list_matrices", action="store_true",
+                   help="列出内置矩阵，不跑")
+    p.add_argument("--outdir")
+    p.add_argument("--seed", type=int, default=-1)
+    p.add_argument("--timeout", type=int, default=3600)
+    p.add_argument("--interval", type=int, default=10)
+    p.add_argument("--dry-run", action="store_true", help="只打印格子和成本，不调用 API")
+    p.add_argument("--force", action="store_true", help="已完成的格子也重跑")
+    p.add_argument("--yes", action="store_true", help="余额不够也开跑（会在中途失败）")
+    p.set_defaults(func=cmd_sweep)
 
     args = parser.parse_args()
     try:
