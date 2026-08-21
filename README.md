@@ -24,7 +24,8 @@
 所以 `avatar_lab.py` 跑的不是单纯的「生成」，而是完整一条：
 
 ```
-上传素材 → 生成 → （可选）超分到 1080p → 规范化(比例/帧率/容器) → 入库合规校验 → 汇总
+上传素材 → 生成 → （可选）超分 → 规范化(比例/帧率/容器)
+→ 入库合规校验 → 客观指标打分 → 汇总
 ```
 
 10 秒筛选不要一条条改参数。内置矩阵一次跑完所有组合，对照页里逐条看：
@@ -33,7 +34,19 @@
 python3 avatar_lab.py sweep --image face.jpg
 ```
 
-`入库校验`是本地预检腾讯/阿里「系统检测」的硬指标（时长、短边、比例、帧率、封装、文件大小、开头 2 秒音量 ≤ -45dB），**不是生成失败**。10 秒筛选成片过不了 60 秒门槛，这是故意的；实时日志会逐条打出未过项。
+两道检查分工明确，不要混：
+
+| | 问题 | 模块 | 性质 |
+| :-- | :-- | :-- | :-- |
+| **入库校验** | 平台**收不收** | `compliance.py` | 二值，标准来自腾讯/阿里文档 |
+| **客观指标** | 素材**好不好** | `videometrics/` | 连续值，标准要用你的主观选择校准 |
+
+「入库校验不通过」**不是生成失败**——10 秒筛选成片过不了 60 秒时长门槛，这是故意的，
+日志会注明是筛选轮次的预期结果。
+
+客观指标沿用 AGI-Eval《2026 数字人生成评测报告》的四维骨架（合理性/协调性/稳定性/一致性），
+另加一维「活性」处理静默段。它**刻意不出总分**，只给指标向量 + 带时间戳的缺陷清单。
+设计依据、已知局限和校准流程见 **[docs/EVALUATION.md](docs/EVALUATION.md)**。
 
 ## 平台入库硬指标
 
@@ -69,11 +82,27 @@ python3 avatar_lab.py sweep --image face.jpg
 | **C 角色替换** | 模板视频 + 图/音频 | 要 60 秒以上且必须绝对稳定时 |
 | **U 超分收尾** | 任意视频 → 1080p / 4K | A 和 C 基本都要，因为平台最低 1080P |
 
+## 目录结构
+
+| 路径 | 职责 |
+| :-- | :-- |
+| `avatar_lab.py` | CLI 入口：参数解析 + 调度 |
+| `recipes.py` | 28 个模型方案、计价、请求体组装 |
+| `matrices.py` | sweep 的参数矩阵定义 |
+| `compliance.py` | 平台入库硬门槛（能不能收） |
+| `videometrics/` | 客观质量指标（好不好） |
+| `mediaprep.py` | ffmpeg 封装：静默头、规范化、抽帧、循环 |
+| `tts.py` / `wsclient.py` | TTS 与 WaveSpeed 客户端 |
+| `lab/` | CLI 内部实现：表格、HTML 对照页、BT 排名 |
+| `stabilize.py` | 抖动**修复**工具（和 videometrics 的只读打分不同） |
+| `tests/` | pytest，离线部分不需要 API key |
+
 ## 准备
 
 ```bash
 pip install -r requirements.txt
 apt install ffmpeg          # 或 brew install ffmpeg，compliance/mediaprep 依赖它
+apt install libegl1 libgles2  # Linux 上 mediapipe 需要，否则客观指标跑不了
 
 cp .env.example .env
 # 填 WAVESPEED_API_KEY=wsk_live_xxxx（海外，模型最全）
@@ -117,7 +146,13 @@ python3 avatar_lab.py models --filter avatar  # 查 WaveSpeed 上还有什么模
 
 ### 第 1 步：本地链路自检（免费，不调 API）
 
-先确认 ffmpeg 那套能用，免得 API 跑完了卡在最后一步：
+先把测试跑一遍，能覆盖计价、矩阵展开、入库校验边界、ffmpeg 流水线和全部客观指标：
+
+```bash
+python3 -m pytest -q
+```
+
+再确认 ffmpeg 那套能用，免得 API 跑完了卡在最后一步：
 
 ```bash
 # 造一个故意不合规的样本：480×832、25fps、12 秒
@@ -170,8 +205,21 @@ python3 avatar_lab.py sweep --image face.jpg --dry-run   # 只看格子和成本
 python3 avatar_lab.py sweep --image face.jpg             # 开跑
 ```
 
-跑完用浏览器打开 `data/lab/sweep-screen10/index.html`。页面上每条都有视频和开头 0.3/1/2/3 秒抽帧，可按模型/静默/提示词筛选。
+跑完用浏览器打开 `data/lab/sweep-screen10/index.html`，两个页签：
+
+- **网格对照**：每条的视频、开头 0.3/1/2/3 秒抽帧、客观指标、缺陷清单，可按模型/静默/提示词筛选
+- **盲测**：一次只给两条、不显示模型名、左右随机，你选哪个好
+
 中途余额不够或失败，同样命令再跑会跳过已完成的格子。
+
+盲测投完点「导出 votes.json」放回结果目录，然后：
+
+```bash
+python3 avatar_lab.py rank data/lab/sweep-screen10
+```
+
+会给出 Bradley-Terry 排名，并把每个客观指标和你的偏好做 Spearman 秩相关——
+相关系数接近 +1 的指标才有资格替你排序。这是整套评价体系唯一的有效性证明方式。
 
 想先只看三个模型本身（3 条，静默 2s + alive）：
 
@@ -269,6 +317,8 @@ python3 moarkclient.py probe InfiniteTalk --image <url> --audio <url>
 | `avatar_lab.py sweep --image face.jpg` | **10 秒参数矩阵，一次跑完对照试验** |
 | `avatar_lab.py run --recipes ...` | 跑单组实验（完整流水线，给 60 秒赢家用） |
 | `avatar_lab.py report <目录>` | 重新汇总已有结果 |
+| `avatar_lab.py eval <视频>` | 单独跑客观指标（不花钱） |
+| `avatar_lab.py rank <目录>` | 盲测投票 → BT 排名 + 指标相关性 |
 | `avatar_lab.py tts` | 合成驱动音频（默认 10 秒筛选稿） |
 | `tts.py --list-voices` | 列出中文音色 |
 | `avatar_lab.py models --filter kw` | 查 WaveSpeed 模型清单 |
