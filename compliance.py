@@ -36,6 +36,12 @@ class ComplianceError(Exception):
     pass
 
 
+# 判定「静默」的音量阈值。-45dB 以下人耳基本听不到，也远低于任何口播底噪。
+SILENT_HEAD_DB = -45.0
+# 检测窗口再短就没有统计意义了（不足 10 帧音频）
+SILENT_HEAD_MIN_WINDOW = 0.5
+
+
 @dataclass
 class Profile:
     key: str
@@ -48,7 +54,8 @@ class Profile:
     max_fps: float
     max_gb: float
     containers: tuple[str, ...] = ("mp4", "mov")
-    require_silent_head: bool = False  # 开头需要 1~3 秒静默闭口
+    require_silent_head: bool = False  # 开头需要静默闭口
+    min_silent_head: float = 1.0       # 平台要求的静默下限，也是检测窗口的下限
     require_no_speech: bool = False    # 全程不能说话（阿里小样本版）
     note: str = ""
 
@@ -87,7 +94,7 @@ PROFILES: dict[str, Profile] = {
         "aliyun-hifi", "阿里云 2D 高精度视频版",
         min_seconds=270, max_seconds=330, min_height=1080,
         allowed_ratios=("16:9", "9:16"), min_fps=30, max_fps=120, max_gb=25,
-        require_silent_head=True,
+        require_silent_head=True, min_silent_head=15.0,
         note="要求 5 分钟一镜到底：15 秒静默 + 4~5 分钟口播",
     ),
 }
@@ -201,8 +208,13 @@ def head_loudness(path: str | Path, seconds: float = 2.0) -> float | None:
     return None
 
 
-def check(path: str | Path, profile_key: str) -> Report:
-    """按指定平台档位逐条校验。"""
+def check(path: str | Path, profile_key: str,
+          silence_seconds: float | None = None) -> Report:
+    """按指定平台档位逐条校验。
+
+    silence_seconds 是这条素材实际加的静默头秒数。「开头静默」一项会按它取检测
+    窗口——写死 2 秒的话，用 1 秒静默的素材第 2 秒已经在说话，会被误判不合格。
+    """
     if profile_key not in PROFILES:
         raise ComplianceError(
             f"未知档位 {profile_key!r}，可选：{', '.join(PROFILES)}"
@@ -247,21 +259,26 @@ def check(path: str | Path, profile_key: str) -> Report:
     ))
 
     if profile.require_silent_head:
-        db = head_loudness(path, 2.0)
+        # 窗口必须落在实际静默段内，否则口播会漏进来把这一项判死
+        window = silence_seconds if silence_seconds is not None else profile.min_silent_head
+        window = max(SILENT_HEAD_MIN_WINDOW, min(window, info["duration"]))
+        db = head_loudness(path, window)
         if db is None:
             report.checks.append(Check("开头静默", False, "没有音轨，平台要求音画同步"))
         else:
             report.checks.append(Check(
-                "开头静默", db <= -45,
-                f"前 2 秒平均音量 {db:.1f}dB（要求 ≤-45dB，即闭口静默 1~3 秒）",
+                "开头静默", db <= SILENT_HEAD_DB,
+                f"前 {window:g} 秒平均音量 {db:.1f}dB"
+                f"（要求 ≤{SILENT_HEAD_DB:g}dB，即闭口静默 ≥{profile.min_silent_head:g}s）",
             ))
 
     if profile.require_no_speech:
-        db = head_loudness(path, min(info["duration"], 30))
+        window = min(info["duration"], 30)
+        db = head_loudness(path, window)
         detail = "无音轨，符合小样本版「全程闭嘴不说话」" if db is None else \
-                 f"检测到音轨（前 30 秒 {db:.1f}dB）。小样本版要求人物全程闭嘴，" \
+                 f"检测到音轨（前 {window:g} 秒 {db:.1f}dB）。小样本版要求人物全程闭嘴，" \
                  f"素材本身不该有口播；如果只是背景静音轨可忽略此项"
-        report.checks.append(Check("无口播", db is None or db <= -45, detail))
+        report.checks.append(Check("无口播", db is None or db <= SILENT_HEAD_DB, detail))
 
     return report
 
@@ -279,12 +296,15 @@ def _cli() -> None:
     parser.add_argument("videos", nargs="+", help="待校验的视频文件")
     parser.add_argument("--profile", default="tencent-general",
                         choices=list(PROFILES), help="平台档位（默认 tencent-general）")
+    parser.add_argument("--silence", type=float, default=None,
+                        help="这条素材实际加了几秒静默头。「开头静默」按它取检测窗口，"
+                             "不传就用档位下限")
     args = parser.parse_args()
 
     failed = 0
     for v in args.videos:
         try:
-            report = check(v, args.profile)
+            report = check(v, args.profile, silence_seconds=args.silence)
         except ComplianceError as exc:
             print(f"不通过  {v}: {exc}")
             failed += 1

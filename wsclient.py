@@ -24,10 +24,6 @@ import requests
 BASE_URL = "https://api.wavespeed.ai"
 UPLOAD_MAX_MB = 200
 
-# 视频类模型按「每 5 秒」计费，base_price 就是单个 5 秒块的价格。
-# 例：infinitetalk base_price=0.15 → $0.03/秒 → 60 秒 12 块 = $1.80
-BILLING_BLOCK_SECONDS = 5
-
 TERMINAL_OK = "completed"
 TERMINAL_BAD = {"failed", "error", "canceled", "cancelled"}
 
@@ -95,7 +91,8 @@ def _request(method: str, path: str, *, json_body: dict | None = None,
             if resp.status_code == 401:
                 hint = "\n提示：检查 WAVESPEED_API_KEY 是否正确、是否已失效。"
             elif "balance" in str(message).lower() or "insufficient" in str(message).lower():
-                hint = "\n提示：余额不足。先用 `python3 avatar_lab.py budget` 估算成本再跑。"
+                hint = ("\n提示：余额不足。先用 `python3 avatar_lab.py balance` 查余额、"
+                        "`plan` 估算成本再跑。")
             elif resp.status_code == 429:
                 hint = ("\n提示：触发限流。Bronze 账号只有 5 次/分钟、2 个并发，"
                         "用 --concurrency 1 并加大 --interval。")
@@ -268,12 +265,6 @@ def record_calibration(model_id: str, cost: float, seconds: float,
 def measured_per_second(model_id: str) -> float | None:
     entry = load_calibration().get(model_id)
     return entry["per_second"] if entry and entry.get("samples") else None
-
-
-def estimate_cost(base_price: float, seconds: float) -> float:
-    """按 5 秒块向上取整的粗估，仅在没有实测数据时兜底。"""
-    blocks = max(1, -(-int(round(seconds)) // BILLING_BLOCK_SECONDS))
-    return round(blocks * base_price, 4)
 
 
 def list_models(refresh: bool = False, cache: str = "data/ws_models.json") -> list[dict]:
