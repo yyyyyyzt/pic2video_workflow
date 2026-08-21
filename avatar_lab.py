@@ -35,14 +35,13 @@ from pathlib import Path
 
 import wsclient
 from recipes import GROUPS, RECIPES, ROUTE_LABELS, Recipe, build_payload, resolve
+from lab.report import defect_lines, summarize, write_sweep_index
+from lab.table import render_table
 from wsclient import load_dotenv
 
 DEFAULT_OUTDIR = Path("data/lab")
 DEFAULT_PROMPT_FILE = Path("prompts/tencent_general_prompt.txt")
 DEFAULT_SCRIPT_10S = Path("prompts/tencent_general_script_10s.txt")
-DEFAULT_SCRIPT_60S = Path("prompts/tencent_general_script_60s.txt")
-
-DEFAULT_OUTDIR = Path("data/lab")
 
 # 各档位的时长下限，用来在合成台词后立刻提醒，而不是等生成完才发现太短
 PROFILE_MIN_SECONDS = {
@@ -59,27 +58,19 @@ def _log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def _width(text: str) -> int:
-    """按终端显示宽度算长度，中文占 2 列。"""
-    return sum(2 if ord(c) > 0x2E80 else 1 for c in text)
-
-
-def _table(headers: list[str], rows: list[list[str]]) -> str:
-    cols = len(headers)
-    widths = [max(_width(headers[i]), *(_width(r[i]) for r in rows)) if rows
-              else _width(headers[i]) for i in range(cols)]
-
-    def line(cells: list[str]) -> str:
-        return "  ".join(c + " " * (widths[i] - _width(c)) for i, c in enumerate(cells))
-
-    out = [line(headers), "  ".join("-" * w for w in widths)]
-    out += [line(r) for r in rows]
-    return "\n".join(out)
-
-
 # ---------------------------------------------------------------------------
 # list / plan
 # ---------------------------------------------------------------------------
+
+def _resolve_upscaler(name: str | None) -> Recipe | None:
+    """把 --upscale 的取值解析成 Recipe。空串 / none / off 都表示不超分。"""
+    if not name or str(name).strip().lower() in ("none", "off", "no"):
+        return None
+    key = str(name).strip()
+    if key not in RECIPES:
+        raise KeyError(f"未知超分方案 {key!r}，可选：{', '.join(r for r in RECIPES if r.startswith('up-'))}")
+    return RECIPES[key]
+
 
 def _cost_of(recipe: Recipe, seconds: float) -> tuple[float, bool]:
     """返回 (成本, 是否为实测值)。
@@ -108,7 +99,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 f"${cost:.2f}" + ("" if real else "?"),
                 r.note,
             ])
-        print(_table(["方案", "说明", "输入", "分辨率", f"{seconds:g}s 成本", "备注"], rows))
+        print(render_table(["方案", "说明", "输入", "分辨率", f"{seconds:g}s 成本", "备注"], rows))
     print(f"\n组合：screen = {' + '.join(GROUPS['screen'])}（10 秒筛选）")
     print(f"      tencent = {' + '.join(GROUPS['tencent'])}（60 秒质量档）")
     print(f"\n成本按 {seconds:g} 秒计。带 ? 的是粗估：WaveSpeed 的 base_price 单位不统一"
@@ -120,7 +111,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_plan(args: argparse.Namespace) -> int:
     picked = resolve(args.recipes)
     seconds = args.seconds
-    upscale = RECIPES[args.upscale] if args.upscale else None
+    upscale = _resolve_upscaler(args.upscale)
 
     rows, total, any_guess = [], 0.0, False
     for r in picked:
@@ -134,7 +125,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
                      f"${up:.2f}" if up else "-", f"${gen + up:.2f}{mark}"])
         total += gen + up
 
-    print(_table(["方案", "说明", "生成", "超分", "小计"], rows))
+    print(render_table(["方案", "说明", "生成", "超分", "小计"], rows))
     print(f"\n合计 ${total:.2f}{'（带 ? 的为粗估，可能偏差数倍）' if any_guess else '（全部为实测单价）'}"
           f"　{len(picked)} 个方案 × {seconds:g} 秒")
 
@@ -159,7 +150,7 @@ def cmd_models(args: argparse.Namespace) -> int:
             if kw in m["model_id"].lower() or kw in (m.get("type") or "").lower()]
     rows = [[m["model_id"], m.get("type", ""), f"${m.get('base_price')}"]
             for m in sorted(hits, key=lambda x: x["model_id"])]
-    print(_table(["model_id", "type", "base_price/5s"], rows))
+    print(render_table(["model_id", "type", "base_price/5s"], rows))
     print(f"\n共 {len(hits)} / {len(models)} 个模型")
     return 0
 
@@ -295,32 +286,18 @@ def _read_prompt(args: argparse.Namespace) -> str:
     return args.prompt or ""
 
 
-def _analyze(video: Path) -> dict:
-    """调 stabilize.py 的分析能力拿抖动指标；没装 opencv 就跳过。"""
+def _evaluate(video: Path, *, silence: float, reference_image=None) -> dict:
+    """跑客观指标。缺依赖时返回 available=False，并把原因写进日志——
+    以前这里静默返回空字典，结果指标没跑也看不出来。"""
     try:
-        import stabilize  # noqa: F401  仅用于探测依赖是否齐全
-    except Exception:
-        return {}
-    import subprocess
-    out = subprocess.run([sys.executable, "stabilize.py", str(video), "--method", "analyze"],
-                         capture_output=True, text=True)
-    if out.returncode != 0:
-        return {}
-    metrics: dict = {"raw": out.stdout}
-    for line in out.stdout.splitlines():
-        if "抖动加速度" in line:
-            nums = [t for t in line.replace("　", " ").split() if _isnum(t)]
-            keys = ["accel_median", "accel_p95", "accel_p99", "accel_max"]
-            metrics.update(dict(zip(keys, (float(n) for n in nums))))
-    return metrics
-
-
-def _isnum(token: str) -> bool:
-    try:
-        float(token)
-        return True
-    except ValueError:
-        return False
+        import videometrics
+    except ImportError as exc:
+        return {"available": False, "note": f"缺依赖：{exc}"}
+    result = videometrics.evaluate_to_dict(
+        video, silence_seconds=silence, reference_image=reference_image)
+    if not result.get("available"):
+        _log(f"客观指标跳过：{result.get('note')}")
+    return result
 
 
 def _log_compliance(recipe_key: str, report, profile: str) -> None:
@@ -438,14 +415,22 @@ def _run_one(recipe: Recipe, urls: dict, ctx: dict) -> dict:
         except ComplianceError as exc:
             _log(f"[{log_key}] 抽帧失败：{exc}")
 
-        report = check(final, ctx["profile"])
+        report = check(final, ctx["profile"], silence_seconds=silence or None)
         record["compliance_passed"] = report.passed
         record["compliance"] = [{"name": c.name, "ok": c.ok, "detail": c.detail}
                                 for c in report.checks]
         _log_compliance(log_key, report, ctx["profile"])
 
         if ctx["analyze"]:
-            record["stability"] = _analyze(final)
+            metrics = _evaluate(final, silence=silence, reference_image=image_local)
+            record["metrics"] = metrics
+            if metrics.get("available"):
+                _log(f"[{log_key}] 客观指标 缺陷 {metrics['major_count']} 重 / "
+                     f"{metrics['minor_count']} 轻")
+                for d in metrics.get("defects", []):
+                    at = f" @{d['at_seconds']:g}s" if d.get("at_seconds") is not None else ""
+                    _log(f"[{log_key}]   ({d['severity']}) "
+                         f"{d['dimension']}/{d['code']}{at} {d['detail']}")
 
         record["status"] = "ok"
         record["cost_actual"] = round(gen_cost + up_cost, 4)
@@ -508,7 +493,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         audio_path = str(padded)
 
     seconds = args.seconds or (audio_duration(audio_path) if audio_path else 10.0)
-    upscaler = RECIPES[args.upscale] if args.upscale else None
+    upscaler = _resolve_upscaler(args.upscale)
 
     total = 0.0
     for r in picked:
@@ -579,153 +564,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print()
-    print(_summarize(records))
+    print(summarize(records))
     print(f"\n结果目录：{outdir}")
     try:
         print(f"剩余余额：${wsclient.balance():.4f}")
     except wsclient.WaveSpeedError:
         pass
     return 0
-
-
-def _summarize(records: list[dict]) -> str:
-    rows = []
-    for r in records:
-        name = r.get("cell_id") or r.get("recipe") or "?"
-        if r.get("status") != "ok":
-            rows.append([name, r.get("status", "?"), "-", "-", "-", "-",
-                         (r.get("error", "") or "")[:40]])
-            continue
-        p = r.get("final_probe", {})
-        st = r.get("stability", {})
-        extra = f"p99={st['accel_p99']:.2f}" if "accel_p99" in st else "-"
-        extra += f" {r.get('elapsed_seconds', 0):.0f}s"
-        if r.get("prompt_key") or r.get("silence") is not None:
-            extra = f"sil={r.get('silence', '-')} {r.get('prompt_key', '')} {extra}"
-        rows.append([
-            name,
-            "通过" if r.get("compliance_passed") else "不通过",
-            f"{p.get('width')}×{p.get('height')}",
-            f"{p.get('fps', 0):g}fps",
-            f"{p.get('duration', 0):.0f}s",
-            f"${r.get('cost_actual', 0):.3f}",
-            extra,
-        ])
-    total = sum(r.get("cost_actual", 0) for r in records)
-    table = _table(["方案", "入库", "分辨率", "帧率", "时长", "成本(实测)", "抖动p99/耗时"], rows)
-    return f"{table}\n\n实际总花费 ${total:.3f}"
-
-
-def _rel(path: str | Path, root: Path) -> str:
-    try:
-        return Path(path).resolve().relative_to(root.resolve()).as_posix()
-    except (ValueError, OSError):
-        return Path(path).as_posix()
-
-
-def _write_sweep_index(outdir: Path, matrix, cells, records: list[dict],
-                       *, image: str, voice: str) -> Path:
-    """写一个本地就能打开的对照页：视频 + 开头抽帧 + 参数。"""
-    by_id = {r.get("cell_id"): r for r in records}
-    cards = []
-    for cell in cells:
-        rec = by_id.get(cell.id) or {}
-        status = rec.get("status", "pending")
-        video = rec.get("final") or rec.get("raw") or ""
-        thumbs = rec.get("thumbs") or []
-        err = rec.get("error") or ""
-        cost = rec.get("cost_actual")
-        probe = rec.get("final_probe") or rec.get("raw_probe") or {}
-        thumb_html = "".join(
-            f'<img src="{_rel(t, outdir)}" alt="{Path(t).stem}">' for t in thumbs
-        )
-        video_html = (
-            f'<video controls preload="metadata" src="{_rel(video, outdir)}"></video>'
-            if video and Path(video).is_file() else
-            f'<div class="miss">{err or status}</div>'
-        )
-        cost_s = f"${cost:.3f}" if isinstance(cost, (int, float)) else "-"
-        spec = ""
-        if probe:
-            spec = (f"{probe.get('width', '?')}×{probe.get('height', '?')} "
-                    f"{probe.get('duration', 0):.1f}s")
-        cards.append(f"""
-<article class="card {status}" data-recipe="{cell.recipe}" data-silence="{cell.silence:g}" data-prompt="{cell.prompt_key}">
-  <header>
-    <strong>{cell.id}</strong>
-    <span class="pill">{cell.recipe}</span>
-    <span class="pill">静默 {cell.silence:g}s</span>
-    <span class="pill">{cell.prompt_key}</span>
-    <span class="pill">{status}</span>
-  </header>
-  {video_html}
-  <div class="thumbs">{thumb_html}</div>
-  <p class="meta">{spec}　{cost_s}{"　" + err if err else ""}</p>
-</article>""")
-
-    body = "\n".join(cards)
-    html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>sweep {matrix.key}</title>
-<style>
-  body {{ font: 14px/1.45 system-ui, sans-serif; background: #111; color: #eee; margin: 0; }}
-  header.page {{ padding: 20px 24px 8px; }}
-  .filters {{ padding: 0 24px 16px; display: flex; gap: 12px; flex-wrap: wrap; }}
-  .filters label {{ opacity: .8; }}
-  .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; padding: 0 24px 40px; }}
-  .card {{ background: #1c1c1c; border-radius: 10px; padding: 12px; border: 1px solid #333; }}
-  .card.failed {{ border-color: #833; }}
-  .card.pending {{ opacity: .55; }}
-  .card header {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }}
-  .pill {{ font-size: 12px; background: #2a2a2a; padding: 2px 8px; border-radius: 999px; }}
-  video {{ width: 100%; border-radius: 8px; background: #000; }}
-  .thumbs {{ display: flex; gap: 4px; margin-top: 8px; }}
-  .thumbs img {{ width: 25%; border-radius: 4px; }}
-  .meta {{ color: #aaa; font-size: 12px; margin: 8px 0 0; }}
-  .miss {{ padding: 40px 12px; text-align: center; color: #888; }}
-  .note {{ color: #bbb; max-width: 70ch; }}
-</style>
-</head>
-<body>
-<header class="page">
-  <h1>{matrix.label}</h1>
-  <p class="note">对照时重点看开头 3 秒：有没有深吸气、会不会眨眼、开口是否直接从闭嘴开始。
-  满意的几条把目录名或日志贴回来即可。音色 {voice}，角色图 {Path(image).name}。
-  抽帧从左到右大约是 0.3s / 1s / 2s / 3s。</p>
-</header>
-<div class="filters">
-  <label>模型 <select id="f-recipe"><option value="">全部</option></select></label>
-  <label>静默 <select id="f-silence"><option value="">全部</option></select></label>
-  <label>提示词 <select id="f-prompt"><option value="">全部</option></select></label>
-</div>
-<section class="grid">
-{body}
-</section>
-<script>
-const keys = ["recipe", "silence", "prompt"];
-for (const key of keys) {{
-  const sel = document.getElementById("f-" + key);
-  const vals = [...new Set([...document.querySelectorAll(".card")].map(c => c.dataset[key]))];
-  for (const v of vals) {{
-    const o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o);
-  }}
-  sel.addEventListener("change", apply);
-}}
-function apply() {{
-  const f = Object.fromEntries(keys.map(k => [k, document.getElementById("f-" + k).value]));
-  for (const c of document.querySelectorAll(".card")) {{
-    c.style.display = keys.every(k => !f[k] || c.dataset[k] === f[k]) ? "" : "none";
-  }}
-}}
-</script>
-</body>
-</html>
-"""
-    path = outdir / "index.html"
-    path.write_text(html, encoding="utf-8")
-    return path
 
 
 def _list_matrices() -> int:
@@ -739,7 +584,7 @@ def _list_matrices() -> int:
             ",".join(f"{s:g}s" for s in mx.silences),
             ",".join(mx.prompts),
         ])
-    print(_table(["矩阵", "说明", "格子", "模型", "静默", "提示词"], rows))
+    print(render_table(["矩阵", "说明", "格子", "模型", "静默", "提示词"], rows))
     print("\n一条命令跑默认矩阵（10 秒完整对比）：")
     print("  python3 avatar_lab.py sweep --image face.jpg")
     return 0
@@ -771,7 +616,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     rows = [[f"{c.index:02d}", c.id, c.recipe, f"{c.silence:g}s", c.prompt_key,
              f"${per_recipe[c.recipe]:.2f}"] for c in cells]
     print()
-    print(_table(["#", "格子", "模型", "静默", "提示词", "估成本"], rows))
+    print(render_table(["#", "格子", "模型", "静默", "提示词", "估成本"], rows))
 
     if args.dry_run:
         outdir = Path(args.outdir or DEFAULT_OUTDIR / f"sweep-{mx.key}")
@@ -838,7 +683,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         _log(f"上传 audio：{path.name}")
         audio_urls[sil] = wsclient.upload(path)
 
-    upscaler = RECIPES[mx.upscale] if mx.upscale else None
+    upscaler = _resolve_upscaler(mx.upscale)
     image_local = args.image if args.image and not str(args.image).startswith("http") else None
 
     records: list[dict] = []
@@ -870,8 +715,9 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         ctx = {
             "outdir": outdir, "prompt": read_prompt(cell.prompt_key), "seed": args.seed,
             "timeout": args.timeout, "interval": args.interval, "profile": mx.profile,
-            "upscaler": upscaler, "seconds": seconds, "analyze": False,
-            "silence": cell.silence, "still_head": False, "image_local": image_local,
+            "upscaler": upscaler, "seconds": seconds, "analyze": not args.no_metrics,
+            "silence": cell.silence, "still_head": mx.still_head,
+            "image_local": image_local,
             "cell_id": cell.id, "log_key": f"{i}/{total_cells} {cell.id}",
         }
         urls = {"image": image_url, "audio": audio_urls[cell.silence]}
@@ -893,16 +739,16 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         }
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
                                  encoding="utf-8")
-        index = _write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
+        index = write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
         _log(f"对照页已更新 {index}")
 
     records = [known.get(c.id, {"cell_id": c.id, "status": "pending"}) for c in cells]
-    index = _write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
+    index = write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
     ok_n = sum(1 for r in records if r.get("status") == "ok")
     fail_n = sum(1 for r in records if r.get("status") == "failed")
     spent = sum(r.get("cost_actual", 0) or 0 for r in records)
     print()
-    print(_summarize(records))
+    print(summarize(records))
     print(f"\n完成 {ok_n}/{len(cells)}，失败 {fail_n}，本矩阵实测约 ${spent:.3f}")
     print(f"对照页：{index}")
     print("用浏览器打开上面的 html，逐条看开头 3 秒。满意的格子名贴回来即可。")
@@ -919,15 +765,143 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(f"找不到 {manifest}")
         return 1
     data = json.loads(manifest.read_text(encoding="utf-8"))
-    print(_summarize(data["records"]))
+    records = data["records"]
+    print(summarize(records))
     print(f"\n输入：{data['inputs']}")
-    for r in data["records"]:
+    for r in records:
         if r.get("status") == "ok" and not r.get("compliance_passed"):
-            print(f"\n{r['recipe']} 未过项：")
+            print(f"\n{r.get('cell_id') or r.get('recipe')} 入库未过项：")
             for c in r.get("compliance", []):
                 if not c["ok"]:
                     print(f"  - {c['name']}: {c['detail']}")
+    lines = defect_lines(records)
+    if lines.strip():
+        print("\n客观缺陷：" + lines)
     return 0
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """对已有视频单独跑客观指标，不调任何付费接口。"""
+    import videometrics
+
+    failed = 0
+    for path in args.videos:
+        result = videometrics.evaluate(
+            path, silence_seconds=args.silence, reference_image=args.image)
+        print("=" * 70)
+        print(path)
+        print(result.render())
+        if args.json:
+            print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        if not result.available:
+            failed += 1
+    return 1 if failed else 0
+
+
+def cmd_rank(args: argparse.Namespace) -> int:
+    """读盲测导出的 votes.json，算 Bradley-Terry 排名，并和客观指标对一下相关性。"""
+    from lab.rating import rank
+
+    votes_path = Path(args.votes) if args.votes else Path(args.outdir) / "votes.json"
+    if not votes_path.is_file():
+        print(f"找不到 {votes_path}")
+        print("在对照页的「盲测」页签投完票，点「导出 votes.json」，放到结果目录里。")
+        return 1
+    data = json.loads(votes_path.read_text(encoding="utf-8"))
+    raw_votes = data.get("votes") or []
+    clips = data.get("clips") or {}
+
+    pairs = [(v["winner"], v["a"] if v["winner"] == v["b"] else v["b"])
+             for v in raw_votes if v.get("winner")]
+    ties = sum(1 for v in raw_votes if not v.get("winner"))
+    if not pairs:
+        print(f"votes.json 里没有有效比较（{ties} 次判为差不多）")
+        return 1
+
+    rows = rank(pairs)
+    table = [[str(r["rank"]), r["name"],
+              f"{r['score']:+.3f}", f"{r['win']}-{r['loss']}",
+              str(clips.get(r["name"], {}).get("recipe", "")),
+              str(clips.get(r["name"], {}).get("silence", "")),
+              str(clips.get(r["name"], {}).get("prompt", ""))]
+             for r in rows]
+    print(render_table(["#", "格子", "BT分", "胜-负", "模型", "静默", "提示词"], table))
+    print(f"\n共 {len(pairs)} 次有效比较，{ties} 次差不多。"
+          f"每条至少比过 3 次分数才比较稳。")
+
+    thin = [r["name"] for r in rows if r["games"] < 3]
+    if thin:
+        print(f"场次不足 3 的（分数仅供参考）：{', '.join(thin)}")
+
+    correlation = _metric_correlation(Path(args.outdir), rows)
+    if correlation:
+        print("\n客观指标 vs 你的偏好（Spearman 秩相关）：")
+        print(render_table(["指标", "相关系数", "样本"],
+                           [[k, f"{v[0]:+.3f}", str(v[1])] for k, v in correlation.items()]))
+        print("\n相关系数接近 +1 表示该指标和你的判断同向，可以进权重；"
+              "接近 0 说明它测的东西你并不在意。")
+    return 0
+
+
+def _metric_correlation(outdir: Path, ranked: list[dict]) -> dict:
+    """把 BT 分数和每个客观指标做秩相关，看哪些指标真的预测你的偏好。"""
+    manifest = outdir / "manifest.json"
+    if not manifest.is_file():
+        return {}
+    records = json.loads(manifest.read_text(encoding="utf-8")).get("records") or []
+    by_id = {r.get("cell_id"): r for r in records}
+
+    scores: dict[str, float] = {r["name"]: r["score"] for r in ranked}
+    series: dict[str, list[tuple[float, float]]] = {}
+    for name, score in scores.items():
+        metrics = (by_id.get(name) or {}).get("metrics") or {}
+        if not metrics.get("available"):
+            continue
+        flat = {"缺陷_major": -metrics.get("major_count", 0),
+                "缺陷_minor": -metrics.get("minor_count", 0)}
+        for block in (metrics.get("metrics") or {}).values():
+            for key, value in block.items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                flat[key] = value
+        for key, value in flat.items():
+            series.setdefault(key, []).append((score, float(value)))
+
+    out = {}
+    for key, points in series.items():
+        if len(points) < 4:
+            continue
+        rho = _spearman([p[0] for p in points], [p[1] for p in points])
+        if rho is not None:
+            out[key] = (rho, len(points))
+    return dict(sorted(out.items(), key=lambda kv: -abs(kv[1][0]))[:15])
+
+
+def _spearman(a: list[float], b: list[float]) -> float | None:
+    """秩相关。不引入 scipy：先转秩再算皮尔逊。"""
+    def ranks(values):
+        order = sorted(range(len(values)), key=lambda i: values[i])
+        out = [0.0] * len(values)
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+                j += 1
+            average = (i + j) / 2 + 1
+            for k in range(i, j + 1):
+                out[order[k]] = average
+            i = j + 1
+        return out
+
+    ra, rb = ranks(a), ranks(b)
+    n = len(ra)
+    mean_a, mean_b = sum(ra) / n, sum(rb) / n
+    num = sum((x - mean_a) * (y - mean_b) for x, y in zip(ra, rb))
+    den_a = sum((x - mean_a) ** 2 for x in ra) ** 0.5
+    den_b = sum((y - mean_b) ** 2 for y in rb) ** 0.5
+    if den_a < 1e-12 or den_b < 1e-12:
+        return None
+    return round(num / (den_a * den_b), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -991,7 +965,9 @@ def main() -> int:
     p.add_argument("--profile", default="tencent-general",
                    help="入库档位，见 compliance.py")
     p.add_argument("--upscale", default="up-bytedance",
-                   help="超分方案，传空字符串则不超分")
+                   help="超分方案。传 none 或 --no-upscale 则不超分")
+    p.add_argument("--no-upscale", dest="upscale", action="store_const", const="",
+                   help="不做超分（10 秒筛选一般不需要）")
     p.add_argument("--outdir")
     p.add_argument("--timeout", type=int, default=3600)
     p.add_argument("--interval", type=int, default=10)
@@ -1025,6 +1001,19 @@ def main() -> int:
     p.add_argument("outdir")
     p.set_defaults(func=cmd_report)
 
+    p = sub.add_parser("eval", help="对已有视频跑客观指标（不花钱）")
+    p.add_argument("videos", nargs="+")
+    p.add_argument("--silence", type=float, default=0.0,
+                   help="这条素材加了几秒静默头。实际会以音频里量出的为准")
+    p.add_argument("--image", help="角色图，给出后会判断成片像不像这张图")
+    p.add_argument("--json", action="store_true", help="连原始指标一起打印")
+    p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("rank", help="用盲测投票算 Bradley-Terry 排名并检验指标")
+    p.add_argument("outdir")
+    p.add_argument("--votes", help="votes.json 路径，默认取 <outdir>/votes.json")
+    p.set_defaults(func=cmd_rank)
+
     p = sub.add_parser("sweep", help="按参数矩阵一次跑完所有组合（10 秒对比试验）")
     p.add_argument("--image", help="角色图（本地路径）。对照试验的固定输入")
     p.add_argument("--matrix", default="screen10",
@@ -1037,6 +1026,8 @@ def main() -> int:
     p.add_argument("--interval", type=int, default=10)
     p.add_argument("--dry-run", action="store_true", help="只打印格子和成本，不调用 API")
     p.add_argument("--force", action="store_true", help="已完成的格子也重跑")
+    p.add_argument("--no-metrics", action="store_true",
+                   help="跳过客观指标计算（默认会算，见 videometrics/）")
     p.add_argument("--yes", action="store_true", help="余额不够也开跑（会在中途失败）")
     p.set_defaults(func=cmd_sweep)
 
