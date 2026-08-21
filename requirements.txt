@@ -1,14 +1,15 @@
 requests>=2.31
-PyJWT>=2.8
 
-# Web 控制台（server.py）
-fastapi>=0.110
-uvicorn>=0.27
-python-multipart>=0.0.9
-
-# 后处理（stabilize.py / --stabilize）才需要；另需系统安装 ffmpeg
+# 客观评测（videometrics/）。不装也能跑生成流水线，只是没有指标打分。
 opencv-python-headless>=4.8
 numpy>=1.24
+mediapipe>=0.10        # 人脸关键点 + blendshape，用于口型/眨眼/身份指标
 
-# avatar_lab.py（多方案实验台）只用到 requests，但 mediaprep.py / compliance.py
-# 依赖系统的 ffmpeg + ffprobe，务必先装：apt install ffmpeg / brew install ffmpeg
+# 测试
+pytest>=8.0
+
+# 系统依赖（pip 装不了，必须自己装）：
+#   ffmpeg + ffprobe    compliance.py / mediaprep.py / videometrics 都要用
+#     apt install ffmpeg   /   brew install ffmpeg
+#   mediapipe 在无显卡的 Linux 上还需要 libEGL：
+#     apt install libegl1 libgles2
