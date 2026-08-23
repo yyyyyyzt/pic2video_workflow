@@ -23,8 +23,13 @@ from videometrics.stability import find_freezes, find_spikes, jitter
 
 
 def make_track(n: int = 200, fps: float = 25.0, **overrides) -> FaceTrack:
-    """构造一条「完美」轨迹，然后按需覆盖某几列来注入缺陷。"""
+    """构造一条「完美」轨迹，然后按需覆盖某几列来注入缺陷。
+
+    体态那几列默认全 NaN，等于「没有 pose 数据」，这样人脸相关的测试
+    不会被体态判定干扰；要测体态就显式传进来（见 test_anatomy.py）。
+    """
     zeros = np.zeros(n)
+    nans = np.full(n, np.nan)
     fields = dict(
         fps=fps, frame_count=n, width=1080, height=1920,
         detected=np.ones(n, dtype=bool),
@@ -39,6 +44,13 @@ def make_track(n: int = 200, fps: float = 25.0, **overrides) -> FaceTrack:
         frame_mean=zeros + 128.0,
         frame_diff=zeros + 1.0,
         mouth_sharpness=zeros + 90.0,
+        face_px=zeros + 500.0,
+        shoulder_l_x=nans.copy(),
+        shoulder_l_y=nans.copy(),
+        shoulder_r_x=nans.copy(),
+        shoulder_r_y=nans.copy(),
+        neck_edge_ratio=nans.copy(),
+        wrist_above_shoulder=nans.copy(),
         embeddings=[],
     )
     fields.update(overrides)
@@ -357,11 +369,13 @@ class TestCollectDefects:
         codes = [d.code for d in _collect_defects(metrics, silence_seconds=0)]
         assert "lipsync_weak" in codes
 
-    def test_no_blink_is_major(self):
+    def test_no_blink_is_minor(self):
+        """降级依据：静默段不参与训练，口播段不眨眼影响观感但不致命。
+        分级策略的完整断言见 test_severity_policy.py。"""
         metrics = self._metrics(活性={"blink_count": 0})
         found = [d for d in _collect_defects(metrics, silence_seconds=0)
                  if d.code == "no_blink"]
-        assert found and found[0].severity == "major"
+        assert found and found[0].severity == "minor"
 
     def test_mouth_not_closed_during_silence(self):
         metrics = self._metrics(
@@ -407,8 +421,10 @@ class TestEndToEnd:
 
         result = videometrics.evaluate(real_video, silence_seconds=2.0)
         assert result.available, result.note
-        assert set(result.metrics) == {"协调性", "一致性", "稳定性", "合理性", "活性"}
+        assert set(result.metrics) == {"体态", "协调性", "一致性",
+                                       "稳定性", "合理性", "活性"}
         assert result.metrics["合理性"]["face_detect_rate"] > 0.5
+        assert result.metrics["合理性"]["face_px_median"] > 0
         assert result.segments
 
     def test_deterministic(self, real_video):

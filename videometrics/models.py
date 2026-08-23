@@ -30,6 +30,14 @@ SFACE = (
     "face_recognition_sface/face_recognition_sface_2021dec.onnx",
 )
 
+# BlazePose 33 点：肩线、手腕、髋部。用 lite 版，体态指标不需要高精度，
+# 而这一步是逐帧跑的，heavy 版会让 80 秒素材的评测时间翻好几倍。
+POSE_LANDMARKER = (
+    "pose_landmarker_lite.task",
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+)
+
 
 def ensure(model: tuple[str, str], *, timeout: int = 120) -> Path | None:
     """返回本地模型路径，必要时下载。拿不到就返回 None。"""

@@ -239,7 +239,24 @@ python3 avatar_lab.py run --recipes screen \
     --outdir data/lab/screen10s
 ```
 
-### 第 4 步：赢家跑完整 60 秒（约 $1.5~3）
+### 第 4 步：赢家跑入库轮（`final60` 矩阵）
+
+筛选定完模型后，用 `final60` 矩阵跑到平台要求的时长并补到 1080p：
+
+```bash
+python3 avatar_lab.py sweep --matrix final60 --image face.jpg --dry-run   # 先看成本
+python3 avatar_lab.py sweep --matrix final60 --image face.jpg
+```
+
+台词稿实际约 80 秒（腾讯允许 1–10 分钟，留足余量防 TTS 语速波动），
+三个模型加超分约 $13。**预算紧就一个一个跑**，音频和格子编号保持一致，
+结果目录可以合并，对照页始终显示完整矩阵：
+
+```bash
+python3 avatar_lab.py sweep --matrix final60 --image face.jpg --only omnihuman
+```
+
+### 手工指定单条（老写法，仍可用）
 
 ```bash
 python3 avatar_lab.py run \

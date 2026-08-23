@@ -600,23 +600,51 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         return _list_matrices()
 
     mx = resolve_matrix(args.matrix)
-    cells = expand(mx)
+    all_cells = expand(mx)
+    cells = expand(mx, args.only)
+    if not cells:
+        print(f"--only {args.only!r} 没匹配到任何格子。全部格子：")
+        print("  " + ", ".join(c.id for c in all_cells))
+        return 1
     picked = recipes_of(mx)
     by_key = {r.key: r for r in picked}
 
-    dummy_seconds = 11.0
-    per_recipe = {r.key: _cost_of(r, dummy_seconds)[0] for r in picked}
-    est = sum(per_recipe[c.recipe] for c in cells)
+    def all_records(known: dict) -> list[dict]:
+        """汇总和对照页始终按完整矩阵铺开，这样分批跑也能看到全貌。"""
+        return [known.get(c.id, {"cell_id": c.id, "status": "pending"})
+                for c in all_cells]
+
+    # 成本必须按台词稿的真实长度估。写死一个秒数会在入库轮（80 秒）
+    # 少报好几倍，而这个数直接决定你要不要充钱。
+    script_text = tts.read_script(mx.script_file)
+    speech_seconds = tts.estimate_seconds(script_text, mx.tts_speed)
+    upscaler = _resolve_upscaler(mx.upscale)
+
+    def cell_cost(cell) -> float:
+        recipe = by_key[cell.recipe]
+        seconds = speech_seconds + cell.silence
+        total = _cost_of(recipe, seconds)[0]
+        if upscaler and not recipe.native_1080p and recipe.route != "U":
+            total += _cost_of(upscaler, seconds)[0]
+        return total
+
+    est = sum(cell_cost(c) for c in cells)
+    est_all = sum(cell_cost(c) for c in all_cells)
+
     print(f"矩阵 {mx.key}：{mx.label}")
     print(f"  {mx.note}")
-    print(f"  {len(cells)} 个格子 = {len(mx.recipes)} 模型 × {len(mx.silences)} 静默 × {len(mx.prompts)} 提示词")
-    print(f"  台词 {mx.script_file}　音色 {mx.voice}　超分 {'关' if not mx.upscale else mx.upscale}")
-    print(f"  静止帧替换：关（开头要能眨眼）")
-    print(f"  预估生成成本约 ${est:.2f}（不含 TTS，按约 11s 粗估）")
+    print(f"  {len(cells)} 个格子"
+          + (f"（已用 --only 从 {len(all_cells)} 个里筛出）" if args.only else
+             f" = {len(mx.recipes)} 模型 × {len(mx.silences)} 静默 × {len(mx.prompts)} 提示词"))
+    print(f"  台词 {mx.script_file}：{len(script_text)} 字，预计口播 {speech_seconds:.0f}s")
+    print(f"  音色 {mx.voice}　超分 {mx.upscale or '关'}　静止帧替换 关")
+    print(f"  预估成本 ${est:.2f}（含超分，不含 TTS）"
+          + (f"，整个矩阵 ${est_all:.2f}" if args.only else ""))
     rows = [[f"{c.index:02d}", c.id, c.recipe, f"{c.silence:g}s", c.prompt_key,
-             f"${per_recipe[c.recipe]:.2f}"] for c in cells]
+             f"{speech_seconds + c.silence:.0f}s", f"${cell_cost(c):.2f}"]
+            for c in cells]
     print()
-    print(render_table(["#", "格子", "模型", "静默", "提示词", "估成本"], rows))
+    print(render_table(["#", "格子", "模型", "静默", "提示词", "成片", "估成本"], rows))
 
     if args.dry_run:
         outdir = Path(args.outdir or DEFAULT_OUTDIR / f"sweep-{mx.key}")
@@ -639,8 +667,11 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         bal = wsclient.balance()
         print(f"\n当前余额 ${bal:.2f}")
         if est > bal and not args.yes:
-            print(f"预估超过余额。可先跑 python3 avatar_lab.py sweep --image {args.image} --matrix screen10-models")
-            print("余额够了再原命令续跑（已完成的格子会跳过）。")
+            print(f"预估 ${est:.2f} 超过余额 ${bal:.2f}。两个选择：")
+            cheapest = min(cells, key=cell_cost)
+            print(f"  1) 先跑最便宜的一个：--only {cheapest.recipe}"
+                  f"（约 ${cell_cost(cheapest):.2f}）")
+            print(f"  2) 充值后原命令续跑，已完成的格子会自动跳过")
             return 1
     except wsclient.WaveSpeedError as exc:
         print(f"  余额查询失败：{exc}")
@@ -683,7 +714,6 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         _log(f"上传 audio：{path.name}")
         audio_urls[sil] = wsclient.upload(path)
 
-    upscaler = _resolve_upscaler(mx.upscale)
     image_local = args.image if args.image and not str(args.image).startswith("http") else None
 
     records: list[dict] = []
@@ -729,21 +759,22 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         rec["prompt_file"] = cell.prompt_file
         known[cell.id] = rec
 
-        records = [known.get(c.id, {"cell_id": c.id, "status": "pending"}) for c in cells]
+        records = all_records(known)
         manifest = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "matrix": mx.key,
             "inputs": {"image": args.image, "voice": mx.voice, "script": mx.script_file},
-            "cells": [cell.__dict__ for cell in cells],
+            "cells": [cell.__dict__ for cell in all_cells],
             "records": records,
         }
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
                                  encoding="utf-8")
-        index = write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
+        index = write_sweep_index(outdir, mx, all_cells, all_records(known),
+                                  image=args.image, voice=mx.voice)
         _log(f"对照页已更新 {index}")
 
-    records = [known.get(c.id, {"cell_id": c.id, "status": "pending"}) for c in cells]
-    index = write_sweep_index(outdir, mx, cells, records, image=args.image, voice=mx.voice)
+    records = all_records(known)
+    index = write_sweep_index(outdir, mx, all_cells, records, image=args.image, voice=mx.voice)
     ok_n = sum(1 for r in records if r.get("status") == "ok")
     fail_n = sum(1 for r in records if r.get("status") == "failed")
     spent = sum(r.get("cost_actual", 0) or 0 for r in records)
@@ -1028,6 +1059,9 @@ def main() -> int:
     p.add_argument("--force", action="store_true", help="已完成的格子也重跑")
     p.add_argument("--no-metrics", action="store_true",
                    help="跳过客观指标计算（默认会算，见 videometrics/）")
+    p.add_argument("--only",
+                   help="只跑匹配的格子（子串匹配格子名或方案名）。"
+                        "预算紧时用来一个模型一个模型地跑，音频和编号保持一致")
     p.add_argument("--yes", action="store_true", help="余额不够也开跑（会在中途失败）")
     p.set_defaults(func=cmd_sweep)
 

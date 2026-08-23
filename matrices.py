@@ -6,8 +6,9 @@
 这里把组合写死，sweep 一条命令展开，不再靠手工改参数。
 
 命名约定：
-  screen10          这次 10 秒检查的完整矩阵（默认）
+  screen10          10 秒筛选的完整矩阵（默认）
   screen10-models   只换模型，静默/提示词固定，用来先花一笔钱看三个模型本身
+  final60           筛选之后的入库轮，跑到平台要求的时长并补到 1080p
 """
 
 from __future__ import annotations
@@ -53,6 +54,18 @@ PROMPT_FILES = {
 
 
 MATRICES: dict[str, Matrix] = {
+    "final60": Matrix(
+        key="final60",
+        label="入库轮 · 60 秒以上，三个模型定稿",
+        note="按 10 秒筛选结果收窄：静默 1s + strict 提示词（实测偏好都指向这一组），"
+             "开超分补到 1080p。台词稿实际约 80 秒，预算紧就配 --only 一个个跑。",
+        recipes=("omnihuman-15", "skyreels-std", "infinitetalk-720"),
+        silences=(1.0,),
+        prompts=("strict",),
+        script_file="prompts/tencent_general_script_60s.txt",
+        voice="seed:felix_zh",
+        upscale="up-bytedance",
+    ),
     "screen10": Matrix(
         key="screen10",
         label="10 秒筛选 · 模型 × 静默 × 提示词",
@@ -93,8 +106,12 @@ def read_prompt(key: str) -> str:
                     if l.strip() and not l.strip().startswith("#"))
 
 
-def expand(matrix: Matrix) -> list[Cell]:
-    """笛卡尔积。顺序：静默（2s 优先）→ 提示词 → 模型，同一对比组紧挨着。"""
+def expand(matrix: Matrix, only: str | None = None) -> list[Cell]:
+    """笛卡尔积。顺序：静默（2s 优先）→ 提示词 → 模型，同一对比组紧挨着。
+
+    only 是子串筛选，匹配格子名或方案名。编号仍按完整矩阵算，
+    这样分几次跑出来的格子名和一次跑完是一致的，结果目录可以合并。
+    """
     cells: list[Cell] = []
     n = 0
     for silence in matrix.silences:
@@ -103,6 +120,8 @@ def expand(matrix: Matrix) -> list[Cell]:
                 n += 1
                 sil = f"{silence:g}".replace(".", "p")
                 cell_id = f"{n:02d}-{recipe}_sil{sil}_{prompt_key}"
+                if only and only not in cell_id and only not in recipe:
+                    continue
                 cells.append(Cell(
                     id=cell_id, index=n, recipe=recipe, silence=silence,
                     prompt_key=prompt_key, prompt_file=PROMPT_FILES[prompt_key],
