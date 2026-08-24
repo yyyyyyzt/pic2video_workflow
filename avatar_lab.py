@@ -82,6 +82,23 @@ def _cost_of(recipe: Recipe, seconds: float) -> tuple[float, bool]:
     return recipe.price_for(seconds, measured), known is not None
 
 
+def _cost_text(recipe: Recipe, seconds: float) -> str:
+    """给人看的成本。没实测过的写成区间，避免一个准确的数字给人虚假的安全感。"""
+    measured = wsclient.measured_per_second(recipe.model)
+    if measured or recipe.verified_per_second:
+        return f"${recipe.price_for(seconds, measured):.2f}"
+    lo, hi = recipe.price_range(seconds, measured)
+    if abs(hi - lo) < 0.01:
+        return f"${lo:.2f}?"
+    return f"${lo:.2f}~{hi:.2f}?"
+
+
+def _cost_worst(recipe: Recipe, seconds: float) -> float:
+    """区间上界。用来做余额护栏——按最坏情况挡，别等扣完了才发现。"""
+    measured = wsclient.measured_per_second(recipe.model)
+    return recipe.price_range(seconds, measured)[1]
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     seconds = args.seconds
     for route, label in ROUTE_LABELS.items():
@@ -113,26 +130,35 @@ def cmd_plan(args: argparse.Namespace) -> int:
     seconds = args.seconds
     upscale = _resolve_upscaler(args.upscale)
 
-    rows, total, any_guess = [], 0.0, False
+    rows, total, worst, any_guess = [], 0.0, 0.0, False
     for r in picked:
         gen, gen_real = _cost_of(r, seconds)
         up, up_real = (0.0, True)
         if upscale and not r.native_1080p and r.route != "U":
             up, up_real = _cost_of(upscale, seconds)
         any_guess |= not (gen_real and up_real)
-        mark = "" if (gen_real and up_real) else "?"
-        rows.append([r.key, r.label, f"${gen:.2f}",
-                     f"${up:.2f}" if up else "-", f"${gen + up:.2f}{mark}"])
+        rows.append([r.key, r.label, _cost_text(r, seconds),
+                     _cost_text(upscale, seconds) if up else "-",
+                     f"${gen + up:.2f}" if (gen_real and up_real) else
+                     f"${_cost_worst(r, seconds) + (_cost_worst(upscale, seconds) if up else 0):.2f} 上限"])
         total += gen + up
+        worst += _cost_worst(r, seconds) + (_cost_worst(upscale, seconds) if up else 0.0)
 
     print(render_table(["方案", "说明", "生成", "超分", "小计"], rows))
-    print(f"\n合计 ${total:.2f}{'（带 ? 的为粗估，可能偏差数倍）' if any_guess else '（全部为实测单价）'}"
-          f"　{len(picked)} 个方案 × {seconds:g} 秒")
+    if any_guess:
+        print(f"\n合计 ${total:.2f}，最坏 ${worst:.2f}"
+              f"　{len(picked)} 个方案 × {seconds:g} 秒")
+        print("带 ? 的没实测过单价。区间的两端分别按「每秒」和「每 5 秒块」算——"
+              "这两种单位差 5 倍，猜错是会真花钱的。")
+    else:
+        print(f"\n合计 ${total:.2f}（全部为实测单价）"
+              f"　{len(picked)} 个方案 × {seconds:g} 秒")
 
     try:
         bal = wsclient.balance()
         print(f"当前余额 ${bal:.2f}", end="")
-        print(" — 余额不足，请缩短 --seconds 或减少方案" if total > bal else " — 够跑")
+        # 护栏按最坏情况判，不按期望值
+        print(" — 余额不足，请缩短 --seconds 或减少方案" if worst > bal else " — 够跑")
     except wsclient.WaveSpeedError as exc:
         print(f"（余额查询失败：{exc}）")
     return 0

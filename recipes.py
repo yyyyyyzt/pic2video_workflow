@@ -12,15 +12,23 @@
                只输出 480p/720p，所以这一步基本是必选项。
 
 关于计价，有个坑必须说清楚：**base_price 的单位因模型而异**，WaveSpeed 没有
-统一。实测例子：
+统一。已实测确认的：
 
-  InfiniteTalk   base_price=0.15，官方描述写「720p tier $0.30/5s」→ 单位是「每 5 秒」
-  SkyReels V3    base_price=0.04，模型页价目表写「5s=$0.20」    → 单位是「每 1 秒」
+  bytedance/*    按每 1 秒计价
+                 OmniHuman 1.5  base=0.16 → 实测 $0.156/秒（81 秒扣 $12.64）
+                 video-upscaler base=0.0072 → 实测 $0.0083/秒
+  skywork-ai/*   按每 1 秒计价
+                 SkyReels V3 标准 base=0.04 → 实测 $0.0439/秒
+  wavespeed-ai/* 按每 5 秒块计价
+                 InfiniteTalk 快速版 base=0.075 → 实测 9 秒扣 $0.15（= 2 块）
+
+这个单位差异不是小事：OmniHuman 1.5 一开始被当成「每 5 秒」，80 秒素材估出
+$2.72，实际扣了 $12.64，**少报 4.6 倍**。所以 price_unit 猜错是会真花钱的，
+没实测过的模型，plan 会同时给出两种单位下的价格区间而不是一个数。
 
 WaveSpeed 自己在文档里也写了「Documentation prices are for reference and may be
-outdated. The final task charge prevails」。所以这里的 price_for() 只是**粗估**，
-真实成本以 avatar_lab.py 每次调用前后的余额差额为准——跑过的模型会自动写进
-data/cost_calibration.json，之后的估算就用实测值，越跑越准。
+outdated. The final task charge prevails」。真实成本以 avatar_lab.py 每次调用
+前后的余额差额为准——跑过的模型会自动写进 data/cost_calibration.json。
 """
 
 from __future__ import annotations
@@ -58,17 +66,40 @@ class Recipe:
         """路线 B 的时长由模型的 duration 参数写死，与音频长度无关。"""
         return float(self.params.get("duration", seconds))
 
+    @property
+    def price_verified(self) -> bool:
+        """单价是否已被实测确认。没确认的估算可能差好几倍。"""
+        return self.verified_per_second is not None
+
     def price_for(self, seconds: float, measured_per_second: float | None = None) -> float:
         """粗估成本。有实测单价（本地校准表 > 代码里已验证值）就优先用。"""
         billable = self.billable_seconds(seconds)
         measured_per_second = measured_per_second or self.verified_per_second
         if measured_per_second:
             return round(billable * measured_per_second, 4)
+        return self._formula_price(billable, self.price_unit)
 
+    def price_range(self, seconds: float,
+                    measured_per_second: float | None = None) -> tuple[float, float]:
+        """没实测过时给出价格区间：分别按「每秒」和「每 5 秒块」算。
+
+        单一数字会让人以为估得准。OmniHuman 1.5 就是这么让人多花了 4.6 倍的钱——
+        看到 $2.72 就跑了，实际扣 $12.64。区间至少能让你意识到风险有多大。
+        """
+        billable = self.billable_seconds(seconds)
+        measured_per_second = measured_per_second or self.verified_per_second
+        if measured_per_second:
+            exact = round(billable * measured_per_second, 4)
+            return exact, exact
+        lo = self._formula_price(billable, "5s")
+        hi = self._formula_price(billable, "s")
+        return min(lo, hi), max(lo, hi)
+
+    def _formula_price(self, billable: float, unit: str) -> float:
         mult = RESOLUTION_MULTIPLIER.get(self.resolution or "480p", 1.0)
-        if self.price_unit == "run":
+        if unit == "run":
             return round(self.base_price * mult, 4)
-        if self.price_unit == "s":
+        if unit == "s":
             return round(billable * self.base_price * mult, 4)
         blocks = max(1, -(-int(round(billable)) // 5))
         return round(blocks * self.base_price * mult, 4)
@@ -96,10 +127,13 @@ _ROUTE_A = [
            ("image", "audio"), "InfiniteTalk 720p", resolution="720p",
            note="720×1280 是精确 9:16，超分到 1080p 只需 1.5 倍，画质损失最小"),
     Recipe("omnihuman", "A", "bytedance/avatar-omni-human", 0.12,
-           ("image", "audio"), "字节 OmniHuman"),
+           ("image", "audio"), "字节 OmniHuman", price_unit="s",
+           note="按秒计价（同族的 1.5 已实测确认），未单独实测"),
     Recipe("omnihuman-15", "A", "bytedance/avatar-omni-human-1.5", 0.16,
            ("image", "audio"), "字节 OmniHuman 1.5",
-           note="口碑最好的闭源数字人之一，表演自然度通常明显优于开源模型"),
+           price_unit="s", verified_per_second=0.156,
+           note="已实测：81 秒扣 $12.64 = $0.156/秒。按秒计价，60 秒约 $9.4。"
+                "表演自然度好，但它是全表里最贵的之一，跑长片前务必先看 plan"),
     Recipe("ltx-lipsync", "A", "wavespeed-ai/ltx-2.3/lipsync", 0.1,
            ("image", "audio"), "LTX-2.3 Lipsync 1080p",
            resolution="1080p", native_1080p=True,
