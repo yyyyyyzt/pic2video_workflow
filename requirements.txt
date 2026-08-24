@@ -1,5 +1,10 @@
 requests>=2.31
 
+# 提示词调试台（studio.py）。只跑 avatar_lab 命令行的话不需要。
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+
 # 客观评测（videometrics/）。不装也能跑生成流水线，只是没有指标打分。
 opencv-python-headless>=4.8
 numpy>=1.24
