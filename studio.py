@@ -44,9 +44,8 @@ JOBS_FILE = DATA_DIR / "jobs.json"
 UPLOAD_DIR = DATA_DIR / "uploads"
 OUTPUT_DIR = DATA_DIR / "outputs"
 
-# 调试台只放「单图 + 音频直出」这一类，其余路线在 avatar_lab 里跑。
-# label 里带上单价，运营选之前就知道贵不贵。
-STUDIO_MODELS = [
+# 海外通道的候选。label 里带上单价，运营选之前就知道贵不贵。
+WAVESPEED_MODELS = [
     {"provider": "wavespeed", "recipe": "skyreels-std",
      "label": "SkyReels V3 标准版　约 $0.044/秒（已实测）"},
     {"provider": "wavespeed", "recipe": "infinitetalk-fast",
@@ -59,12 +58,45 @@ STUDIO_MODELS = [
      "label": "腾讯混元 Avatar 720p　单价未实测"},
     {"provider": "wavespeed", "recipe": "ltx-lipsync",
      "label": "LTX-2.3 Lipsync　原生 1080p，单价未实测"},
-    {"provider": "moark", "recipe": "Wan2_2-I2V-A14B",
-     "label": "[国内] Wan2.2 图生视频　实测 ¥1.5/条，出 720p 15fps 无音轨，"
-              "只能看动作和手势，不能入库"},
-    {"provider": "moark", "recipe": "InfiniteTalk",
-     "label": "[国内] InfiniteTalk　平台侧目前不可用，选了会直接报错"},
 ]
+
+# 国内通道不写死：端点和单价都从平台自己的模型清单读，见 moarkclient.video_models()
+MOARK_KIND_LABELS = {
+    "audio_video2video": "数字人·口型替换（要模板视频）",
+    "image2video": "图生视频",
+    "multimodal_video": "多模态视频",
+}
+
+
+def studio_models() -> list[dict]:
+    """调试台的模型下拉。海外写死，国内实时查平台清单。
+
+    国内那半故意不写死：手写的端点映射已经错过一次（数字人端点猜成
+    image-video-to-video，实际是 audio-video-to-video），而平台清单里就带着
+    正确答案和单价。
+    """
+    models = list(WAVESPEED_MODELS)
+    try:
+        import moarkclient
+
+        discovered = moarkclient.avatar_models()
+    except Exception:                             # noqa: BLE001 查不到就只显示海外
+        return models
+
+    for entry in sorted(discovered.values(),
+                        key=lambda e: (e["available"] is False, e["kind"], e["model"])):
+        kind = MOARK_KIND_LABELS.get(entry["kind"], entry["kind"])
+        price = f"¥{entry['price']:g}/{entry['unit']}"
+        state = "" if entry["available"] is not False else "　⚠ 平台侧不可用"
+        models.append({
+            "provider": "moark",
+            "recipe": entry["model"],
+            "label": f"[国内] {entry['model']}　{kind}　{price}{state}",
+            "kind": entry["kind"],
+            "needs": entry["files"],
+            "note": entry["note"] or entry["description"],
+        })
+    return models
 
 
 @dataclass
@@ -87,6 +119,9 @@ class Job:
     blocks: dict = field(default_factory=dict)
     image: str = ""
     audio: str = ""
+    template: str = ""          # 模板视频，口型替换类模型（Duix-Avatar）必需
+    # 不影响成功但运营需要知道的事。stage 会被下一步覆盖，所以这类提示必须单独存。
+    warnings: list = field(default_factory=list)
     script: str = ""
     voice: str = ""
     metrics: dict = field(default_factory=dict)
@@ -146,6 +181,14 @@ class JobStore:
 
 
 STORE = JobStore()
+
+
+def _warn(job_id: str, text: str) -> None:
+    """记一条持久告警。不用 stage，因为 stage 会被下一步立刻覆盖，运营根本看不见。"""
+    job = STORE.get(job_id)
+    if job is None or text in job.warnings:
+        return
+    STORE.update(job_id, warnings=[*job.warnings, text])
 
 
 def _save_upload(upload, kind: str) -> str:
@@ -251,25 +294,24 @@ def _run_wavespeed(job_id: str, job: Job, audio_path: str) -> None:
 def _run_moark(job_id: str, job: Job, audio_path: str) -> None:
     import moarkclient
 
-    spec = moarkclient.MODELS.get(job.recipe)
-    if spec is None:
-        raise ValueError(f"未知模力方舟模型 {job.recipe}")
-
-    files: dict[str, str] = {}
-    for field_name in spec["files"]:
-        if field_name in ("image", "ref_image") and job.image:
-            files[field_name] = job.image
-        elif field_name in ("cond_audio", "audio") and audio_path:
-            files[field_name] = audio_path
-        elif field_name == "cond_video" and job.image:
-            files[field_name] = job.image      # 没模板视频时用角色图兜底
-    missing = [f for f in spec["required"] if f != "prompt" and f not in files]
+    endpoint = moarkclient.endpoint_for(job.recipe)
+    # 口型替换类要模板视频。没上传模板时用角色图兜底把链路跑通，
+    # 但会在阶段里写明，免得以为「模板视频这个参数没用」。
+    template = job.template or job.image
+    files, missing = moarkclient.resolve_files(
+        endpoint, image=job.image, audio=audio_path, video=template)
     if missing:
-        raise ValueError(f"{job.recipe} 还缺：{', '.join(missing)}")
+        raise ValueError(
+            f"{job.recipe} 走 {endpoint} 还缺：{', '.join(missing)}。"
+            f"口型替换类模型需要上传模板视频")
+
+    if not job.template and "ref_video" in files:
+        _warn(job_id, "没有上传模板视频，用角色图兜底了。口型替换的效果主要来自"
+                      "模板视频，正式跑请上传一段真人或已生成的模板")
 
     STORE.update(job_id, stage="提交（国内通道）")
     result = moarkclient.run(
-        job.recipe, {"prompt": job.prompt}, files=files,
+        job.recipe, {"prompt": job.prompt}, files=files, endpoint=endpoint,
         on_submit=lambda tid: STORE.update(job_id, remote_task=tid),
         on_tick=lambda s, e: STORE.update(job_id, stage=f"生成中 {s} {e}s"))
 
@@ -361,7 +403,7 @@ def create_app():
         import tts
 
         return JSONResponse({
-            "models": STUDIO_MODELS,
+            "models": studio_models(),
             "prompt": promptlib.catalog(),
             "voices": [{"key": v.key, "label": v.label, "gender": v.gender,
                         "note": v.note} for v in tts.VOICES],
@@ -382,6 +424,7 @@ def create_app():
             import moarkclient
 
             out["moark"] = moarkclient.quota()
+            out["moark_package"] = moarkclient.package_balance()
         except Exception as exc:                  # noqa: BLE001
             out["moark_error"] = str(exc)
         return JSONResponse(out)
@@ -398,6 +441,7 @@ def create_app():
         blocks: str = Form("{}"),
         image: Optional[UploadFile] = File(None),
         audio: Optional[UploadFile] = File(None),
+        template: Optional[UploadFile] = File(None),
     ) -> JSONResponse:
         job = Job(
             id=f"{datetime.now().strftime('%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}",
@@ -414,6 +458,8 @@ def create_app():
             job.image = _save_upload(image, "image")
         if audio is not None and audio.filename:
             job.audio = _save_upload(audio, "audio")
+        if template is not None and template.filename:
+            job.template = _save_upload(template, "template")
 
         if not job.image:
             return JSONResponse({"error": "需要上传角色图"}, status_code=400)
@@ -435,6 +481,29 @@ def create_app():
         if job is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(asdict(job))
+
+    @app.post("/api/jobs/{job_id}/retry")
+    def retry(job_id: str) -> JSONResponse:
+        """用同样的参数重开一条。
+
+        国内通道实测会间歇性返回 Service Temporarily Unavailable：
+        同一组参数失败一次、隔几分钟再跑就成了。这种情况不自动重试（要花钱），
+        但得让运营一键重来，而不是从头再填一遍表单。
+        """
+        old = STORE.get(job_id)
+        if old is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        fresh = Job(
+            id=f"{datetime.now().strftime('%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}",
+            created_at=datetime.now().isoformat(timespec="seconds"),
+            provider=old.provider, recipe=old.recipe, prompt=old.prompt,
+            seconds=old.seconds, script=old.script, voice=old.voice,
+            preset=old.preset, blocks=dict(old.blocks),
+            image=old.image, audio=old.audio, template=old.template,
+        )
+        STORE.add(fresh)
+        threading.Thread(target=_run_job, args=(fresh.id,), daemon=True).start()
+        return JSONResponse({"id": fresh.id, "retry_of": job_id})
 
     @app.post("/api/jobs/{job_id}/reattach")
     def reattach(job_id: str) -> JSONResponse:
@@ -550,6 +619,10 @@ PAGE = r"""<!DOCTYPE html>
       <input type="file" name="image" accept="image/*" required>
       <label>驱动音频（可选，不传就用下面的台词自动合成）</label>
       <input type="file" name="audio" accept="audio/*">
+      <label>模板视频（只有口型替换类模型要，比如国内的 Duix-Avatar）</label>
+      <input type="file" name="template" accept="video/*">
+      <p class="hint">口型替换的稳定性来自模板视频，所以模板拍一次就能反复用，
+      之后每换一段台词只按秒计费。</p>
     </fieldset>
 
     <fieldset>
@@ -789,11 +862,20 @@ function jobCard(j) {
     <div class="meta">${j.stage || ""}　${money}${j.elapsed ? "　耗时 " + j.elapsed + "s" : ""}</div>
     ${j.video ? `<video controls preload="metadata" src="/media/${j.id}"></video>` : ""}
     ${defects ? `<ul class="defect">${defects}</ul>` : ""}
+    ${(j.warnings || []).map(w => `<p class="meta" style="color:#fc9">注意：${w}</p>`).join("")}
     ${j.error ? `<pre class="err">${j.error}</pre>` : ""}
     ${recoverable ? `<button class="ghost" onclick="reattach('${j.id}')">
         重连取回（服务端任务 ${j.remote_task}）</button>` : ""}
+    ${j.status === "failed" ? `<button class="ghost" onclick="retry('${j.id}')">
+        用同样的参数重试</button>` : ""}
     <details><summary class="meta">提示词</summary><div class="preview">${j.prompt || "(空)"}</div></details>
   </div>`;
+}
+
+async function retry(id) {
+  const r = await fetch(`/api/jobs/${id}/retry`, { method: "POST" });
+  if (!r.ok) alert((await r.json()).error || "重试失败");
+  poll();
 }
 
 async function reattach(id) {

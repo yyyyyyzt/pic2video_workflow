@@ -17,3 +17,8 @@ data/
 *.jpg
 *.jpeg
 *.png
+
+# 调试台的运行数据（上传素材、成片、任务记录）
+data/studio/
+# 平台模型清单缓存
+data/moark_models.json

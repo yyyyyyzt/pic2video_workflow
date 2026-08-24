@@ -93,13 +93,37 @@ class TestConfigEndpoint:
             assert m["provider"] in ("wavespeed", "moark")
             assert m["recipe"] and m["label"]
 
-    def test_studio_models_reference_real_recipes(self, client):
-        import moarkclient
+    def test_wavespeed_entries_reference_real_recipes(self, client):
         from recipes import RECIPES
 
         for m in client.get("/api/config").json()["models"]:
-            table = RECIPES if m["provider"] == "wavespeed" else moarkclient.MODELS
-            assert m["recipe"] in table, f"{m['recipe']} 不存在"
+            if m["provider"] == "wavespeed":
+                assert m["recipe"] in RECIPES, f"{m['recipe']} 不存在"
+
+    def test_moark_entries_come_from_catalog(self, monkeypatch):
+        """国内那半是查平台清单来的，不再手写端点——手写过一次就猜错了。"""
+        import moarkclient
+
+        monkeypatch.setattr(moarkclient, "model_details", lambda **kw: [
+            {"id": "Duix-Avatar", "description": "d",
+             "operations": [{"type": "audio_video2video", "name": "数字人生成",
+                             "path": "v1/async/videos/audio-video-to-video",
+                             "price": "0.01", "unit_tag": {"name": "秒"}}]}])
+        entries = [m for m in studio.studio_models() if m["provider"] == "moark"]
+        assert len(entries) == 1
+        assert entries[0]["recipe"] == "Duix-Avatar"
+        assert "¥0.01/秒" in entries[0]["label"]
+
+    def test_moark_lookup_failure_still_lists_wavespeed(self, monkeypatch):
+        """查不到国内清单时，页面不能整个空掉。"""
+        import moarkclient
+
+        def boom(**kw):
+            raise moarkclient.MoarkError("没配 token")
+
+        monkeypatch.setattr(moarkclient, "model_details", boom)
+        models = studio.studio_models()
+        assert models and all(m["provider"] == "wavespeed" for m in models)
 
     def test_labels_mention_price(self, client):
         """运营选模型之前就该知道贵不贵——OmniHuman 一条 80 秒就是 $12.6。"""
@@ -164,6 +188,29 @@ class TestJobLifecycle:
         assert client.get(f"/media/{job_id}").status_code == 404
 
 
+class TestRetry:
+    def test_creates_new_job_with_same_params(self, client):
+        """国内通道会间歇性报 Service Temporarily Unavailable，
+        同样参数隔几分钟再跑就成。一键重来，不用重填表单。"""
+        job_id = _submit(client, prompt="手指点数").json()["id"]
+        studio.STORE.update(job_id, status="failed", error="Service Temporarily Unavailable")
+        r = client.post(f"/api/jobs/{job_id}/retry")
+        assert r.status_code == 200
+        fresh = studio.STORE.get(r.json()["id"])
+        assert fresh.id != job_id
+        assert fresh.prompt == "手指点数"
+        assert fresh.image == studio.STORE.get(job_id).image
+
+    def test_reuses_uploaded_files(self, client):
+        job_id = _submit(client).json()["id"]
+        studio.STORE.update(job_id, status="failed", template="/tmp/t.mp4")
+        new_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
+        assert studio.STORE.get(new_id).template == "/tmp/t.mp4"
+
+    def test_unknown_job_404(self, client):
+        assert client.post("/api/jobs/nope/retry").status_code == 404
+
+
 class TestReattach:
     def test_rejects_job_without_remote_task(self, client):
         job_id = _submit(client).json()["id"]
@@ -185,20 +232,43 @@ class TestReattach:
 
 
 class TestMoarkFieldMapping:
-    def test_missing_required_file_is_reported(self, client, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch):
+        import moarkclient
+
+        monkeypatch.setattr(moarkclient, "model_details", lambda **kw: [
+            {"id": "Duix-Avatar", "operations": [
+                {"type": "audio_video2video", "path":
+                 "v1/async/videos/audio-video-to-video", "price": "0.01"}]},
+            {"id": "InfiniteTalk", "operations": [
+                {"type": "image2video", "path":
+                 "v1/async/videos/image-to-video", "price": "0.5"}]},
+        ])
+
+    def test_missing_required_file_is_reported(self, client):
         """缺文件要在提交前给人话，不要等接口报「必传参数」。"""
         job = Job(id="j1", created_at="t", provider="moark",
                   recipe="Duix-Avatar", prompt="p", seconds=5)
         studio.STORE.add(job)
-        with pytest.raises(ValueError, match="drive_video"):
+        with pytest.raises(ValueError, match="ref_audio"):
             studio._run_moark("j1", job, audio_path="")
 
-    def test_cond_video_falls_back_to_image(self, client, monkeypatch, tmp_path):
-        """InfiniteTalk 要 cond_video，先用角色图兜底把链路跑通。"""
+    def test_error_names_the_template_video(self, client, tmp_path):
         img = tmp_path / "a.png"
         img.write_bytes(_png())
+        job = Job(id="j1b", created_at="t", provider="moark",
+                  recipe="Duix-Avatar", prompt="p", seconds=5)
+        studio.STORE.add(job)
+        with pytest.raises(ValueError, match="模板视频"):
+            studio._run_moark("j1b", job, audio_path=str(img))
+
+    def test_avatar_endpoint_uses_ref_fields(self, client, monkeypatch, tmp_path):
+        """实测数字人端点要 ref_audio + ref_video，不是 drive_video。"""
+        media = tmp_path / "a.mp4"
+        media.write_bytes(b"x")
         job = Job(id="j2", created_at="t", provider="moark",
-                  recipe="InfiniteTalk", prompt="p", seconds=5, image=str(img))
+                  recipe="Duix-Avatar", prompt="p", seconds=5,
+                  image=str(media), template=str(media))
         studio.STORE.add(job)
 
         seen = {}
@@ -206,10 +276,31 @@ class TestMoarkFieldMapping:
 
         monkeypatch.setattr(moarkclient, "run",
                             lambda *a, **k: seen.update(k) or
-                            {"url": "http://x/v.mp4", "price": 1.0, "currency": "CNY"})
+                            {"url": "http://x/v.mp4", "price": 0.6, "currency": "CNY"})
         monkeypatch.setattr(moarkclient, "download", lambda url, out: out)
-        studio._run_moark("j2", job, audio_path=str(img))
-        assert seen["files"]["cond_video"] == str(img)
+        studio._run_moark("j2", job, audio_path=str(media))
+        assert set(seen["files"]) == {"ref_audio", "ref_video"}
+        assert seen["endpoint"] == moarkclient.EP_AUDIO_VIDEO_TO_VIDEO
+
+    def test_template_falls_back_to_image(self, client, monkeypatch, tmp_path):
+        """没上传模板视频时用角色图兜底，先把链路跑通。"""
+        img = tmp_path / "a.png"
+        img.write_bytes(_png())
+        job = Job(id="j3", created_at="t", provider="moark",
+                  recipe="Duix-Avatar", prompt="p", seconds=5, image=str(img))
+        studio.STORE.add(job)
+
+        seen = {}
+        import moarkclient
+
+        monkeypatch.setattr(moarkclient, "run",
+                            lambda *a, **k: seen.update(k) or
+                            {"url": "u", "price": 0.6, "currency": "CNY"})
+        monkeypatch.setattr(moarkclient, "download", lambda url, out: out)
+        studio._run_moark("j3", job, audio_path=str(img))
+        assert seen["files"]["ref_video"] == str(img)
+        # 用持久的 warnings，不能用 stage —— stage 会被下一步覆盖
+        assert any("模板视频" in w for w in studio.STORE.get("j3").warnings)
 
 
 def test_page_html_is_self_contained():
