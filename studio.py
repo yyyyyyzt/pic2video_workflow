@@ -60,9 +60,10 @@ STUDIO_MODELS = [
     {"provider": "wavespeed", "recipe": "ltx-lipsync",
      "label": "LTX-2.3 Lipsync　原生 1080p，单价未实测"},
     {"provider": "moark", "recipe": "Wan2_2-I2V-A14B",
-     "label": "[国内] Wan2.2 图生视频　静默素材，无音频驱动"},
+     "label": "[国内] Wan2.2 图生视频　实测 ¥1.5/条，出 720p 15fps 无音轨，"
+              "只能看动作和手势，不能入库"},
     {"provider": "moark", "recipe": "InfiniteTalk",
-     "label": "[国内] InfiniteTalk　平台侧目前不可用，会直接报错"},
+     "label": "[国内] InfiniteTalk　平台侧目前不可用，选了会直接报错"},
 ]
 
 
@@ -186,13 +187,16 @@ def _run_job(job_id: str) -> None:
             _run_wavespeed(job_id, job, audio_path)
 
         job = STORE.get(job_id)
+        summary = ""
         if job and job.video and Path(job.video).is_file():
-            info = probe(job.video)
-            STORE.update(job_id, stage=f"完成 {info['width']}×{info['height']} "
-                                       f"{info['duration']:.1f}s")
             _attach_metrics(job_id, job.video)
+            info = probe(job.video)
+            summary = (f"完成 {info['width']}×{info['height']} "
+                       f"{info['duration']:.1f}s")
 
-        STORE.update(job_id, status="done", elapsed=round(time.time() - started, 1))
+        # 阶段文字最后写，否则会停在「算客观指标」上，看着像卡住了
+        STORE.update(job_id, status="done", stage=summary or "完成",
+                     elapsed=round(time.time() - started, 1))
     except Exception as exc:                      # noqa: BLE001 后台线程必须兜住一切
         STORE.update(job_id, status="failed", error=f"{type(exc).__name__}: {exc}",
                      elapsed=round(time.time() - started, 1))
