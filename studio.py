@@ -75,7 +75,8 @@ BODY_AWARE_RECIPES = {"skyreels-std", "skyreels-pro", "skyreels-talking",
 MOARK_KIND_LABELS = {
     "audio_video2video": "数字人·口型替换（要模板视频）",
     "image2video": "图生视频",
-    "multimodal_video": "多模态视频",
+    "multimodal_video": "多模态视频（content[]）",
+    "text2video": "文生/图生视频（content[]）",
 }
 
 
@@ -326,8 +327,18 @@ def _run_moark(job_id: str, job: Job, audio_path: str) -> None:
     # 口型替换类要模板视频。没上传模板时用角色图兜底把链路跑通，
     # 但会在阶段里写明，免得以为「模板视频这个参数没用」。
     template = job.template or job.image
-    files, missing = moarkclient.resolve_files(
-        endpoint, image=job.image, audio=audio_path, video=template)
+    media = {"image": job.image, "audio": audio_path, "video": template}
+    if moarkclient.uses_content(endpoint, files={k: v for k, v in media.items() if v}):
+        # 多模态 / generations 图生：必填 content[]，文件走 multipart。
+        # 提示词写进 JSON、图片当 image 字段，网关会把 content 丢掉。
+        payload, files = moarkclient.compose_multimodal(
+            prompt=job.prompt, image=job.image, audio=audio_path,
+            video=job.template or "", duration=job.seconds)
+        missing: list[str] = []
+    else:
+        files, missing = moarkclient.resolve_files(
+            endpoint, image=job.image, audio=audio_path, video=template)
+        payload = {"prompt": job.prompt}
     if missing:
         raise ValueError(
             f"{job.recipe} 走 {endpoint} 还缺：{', '.join(missing)}。"
@@ -339,7 +350,7 @@ def _run_moark(job_id: str, job: Job, audio_path: str) -> None:
 
     STORE.update(job_id, stage="提交（国内通道）")
     result = moarkclient.run(
-        job.recipe, {"prompt": job.prompt}, files=files, endpoint=endpoint,
+        job.recipe, payload, files=files, endpoint=endpoint,
         on_submit=lambda tid: STORE.update(job_id, remote_task=tid),
         on_tick=lambda s, e: STORE.update(job_id, stage=f"生成中 {s} {e}s"))
 

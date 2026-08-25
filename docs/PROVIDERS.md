@@ -85,6 +85,8 @@ Duix-Avatar 都能直接调，省掉一台 GPU 机器和运维。
 
 - **seedance-2.0 / 2.5**（模力方舟，`/async/videos/generations/multimodal`）：
   按算力单元计价（51 / 77），支持图片+视频+音频组合参考，最长 30 秒有声视频。
-  需要 `content[]` 数组格式的文档才能接。
+  已按 `content[]` + multipart 接入：提示词进数组，本地文件走 `files=`，
+  不能写进 JSON body（网关会丢掉，报缺少必填字段 `content`）。
+  Vidu / HappyHorse / Wan 挂在 `generations` 上的「图生视频」同样走这套。
 - `sync/react-1`（base 0.835）、`veed/fabric-1.0`（0.35）：偏贵，没优先级。
 - `kwaivgi/kling-lipsync/*`（0.14~0.15）：可灵的口型替换，和 sync 系列同类。

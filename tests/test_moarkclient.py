@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import requests
 
@@ -50,6 +52,16 @@ SAMPLE_MODELS = [
           "path": "v1/async/videos/generations", "price": "0.1"},
          {"type": "image_video2video", "name": "视频编辑",
           "path": "v1/async/videos/image-video-to-video", "price": "0.1"}]},
+    {"id": "ViduQ3-Pro", "description": "图生视频",
+     "operations": [
+         {"type": "text2video", "name": "文生视频",
+          "path": "v1/async/videos/generations", "price": "0.1"},
+         {"type": "text2video", "name": "图生视频",
+          "path": "v1/async/videos/generations", "price": "0.1"}]},
+    {"id": "seedance-2.0", "description": "多模态",
+     "operations": [{"type": "multimodal_video", "name": "多模态视频",
+                     "path": "v1/async/videos/generations/multimodal",
+                     "price": "51", "unit_tag": {"name": "算力单元"}}]},
     {"id": "HunyuanOCR", "description": "OCR",
      "operations": [{"type": "image2text", "name": "OCR",
                      "path": "v1/images/ocr", "price": "0.02"}]},
@@ -105,6 +117,8 @@ class TestDiscovery:
         avatars = moarkclient.avatar_models()
         assert "Duix-Avatar" in avatars and "LTX-2" in avatars
         assert "Wan2.7" not in avatars          # 视频编辑不算数字人
+        assert "ViduQ3-Pro" in avatars          # generations 上挂了图生，走 content[]
+        assert "seedance-2.0" in avatars
 
     def test_endpoint_for_uses_catalog(self, catalog):
         assert moarkclient.endpoint_for("Duix-Avatar") == \
@@ -169,10 +183,60 @@ class TestResolveFiles:
             audio="a.mp3", video="v.mp4")
         assert "f.png" not in files.values()     # 该端点不吃图
 
+    def test_generations_maps_image_when_provided(self):
+        files, missing = moarkclient.resolve_files(
+            moarkclient.EP_TEXT_TO_VIDEO, image="f.png")
+        assert files == {"image": "f.png"} and missing == []
+
+
+class TestComposeMultimodal:
+    def test_prompt_only_has_text_part(self):
+        payload, files = moarkclient.compose_multimodal(prompt="人在说话")
+        assert payload["content"] == [{"type": "text", "text": "人在说话"}]
+        assert files == {}
+
+    def test_local_image_goes_to_files_not_json_url(self, tmp_path):
+        img = tmp_path / "f.png"
+        img.write_bytes(b"x")
+        payload, files = moarkclient.compose_multimodal(
+            prompt="p", image=str(img))
+        assert files == {"image": str(img)}
+        image_part = payload["content"][1]
+        assert image_part["type"] == "image_url"
+        assert image_part["role"] == "first_frame"
+        assert "url" not in image_part.get("image_url", {})
+
+    def test_remote_url_stays_in_content(self):
+        payload, files = moarkclient.compose_multimodal(
+            prompt="p", image="https://example.com/a.png")
+        assert files == {}
+        assert payload["content"][1]["image_url"]["url"] == "https://example.com/a.png"
+
+    def test_video_makes_image_a_reference(self, tmp_path):
+        img = tmp_path / "f.png"
+        vid = tmp_path / "v.mp4"
+        img.write_bytes(b"x")
+        vid.write_bytes(b"y")
+        payload, files = moarkclient.compose_multimodal(
+            prompt="p", image=str(img), video=str(vid))
+        assert files == {"image": str(img), "video": str(vid)}
+        roles = [p.get("role") for p in payload["content"] if p.get("type") != "text"]
+        assert "reference_image" in roles and "reference_video" in roles
+
+    def test_empty_raises(self):
+        with pytest.raises(MoarkError, match="content"):
+            moarkclient.compose_multimodal()
+
+    def test_uses_content_multimodal_always(self):
+        assert moarkclient.uses_content(moarkclient.EP_MULTIMODAL)
+
+    def test_uses_content_generations_only_with_files(self):
+        assert not moarkclient.uses_content(moarkclient.EP_TEXT_TO_VIDEO)
+        assert moarkclient.uses_content(moarkclient.EP_TEXT_TO_VIDEO,
+                                        files={"image": "a.png"})
+
 
 def json_dumps(obj):
-    import json
-
     return json.dumps(obj, ensure_ascii=False)
 
 
@@ -301,6 +365,66 @@ class TestSubmit:
         with pytest.raises(requests.Timeout):
             moarkclient.submit("Wan2.1-T2V-14B", {"prompt": "p"})
         assert len(calls) == 1
+
+    def test_content_array_goes_multipart_not_json(self, monkeypatch, catalog):
+        """content 写进 JSON body 会被网关丢掉，报缺少必填字段 content。"""
+        seen = {}
+        monkeypatch.setattr(moarkclient.requests, "post",
+                            lambda url, **kw: (seen.update(kw, url=url),
+                                               FakeResponse({"task_id": "T"}))[1])
+        moarkclient.submit(
+            "seedance-2.0",
+            {"content": [{"type": "text", "text": "人在说话"}], "prompt": "人在说话"},
+            endpoint=moarkclient.EP_MULTIMODAL)
+        assert "json" not in seen
+        assert "files" in seen and "content" in seen["files"]
+        name, blob, mime = seen["files"]["content"]
+        assert name == "content.json"
+        assert json.loads(blob.decode("utf-8"))[0]["text"] == "人在说话"
+        assert mime == "application/json"
+        assert "Content-Type" not in seen["headers"]
+        # 不能变成 Python repr 字符串
+        assert seen["data"]["prompt"] == "人在说话"
+
+    def test_local_image_stays_in_files_beside_content(self, monkeypatch, tmp_path, catalog):
+        img = tmp_path / "face.png"
+        img.write_bytes(b"x" * 32)
+        seen = {}
+        monkeypatch.setattr(moarkclient.requests, "post",
+                            lambda url, **kw: (seen.update(kw),
+                                               FakeResponse({"task_id": "T"}))[1])
+        payload, files = moarkclient.compose_multimodal(
+            prompt="人在说话", image=str(img), audio="", video="")
+        moarkclient.submit("seedance-2.0", payload, files=files,
+                           endpoint=moarkclient.EP_MULTIMODAL)
+        assert "image" in seen["files"]
+        assert "content" in seen["files"]
+        body = json.loads(seen["files"]["content"][1].decode("utf-8"))
+        assert body[0] == {"type": "text", "text": "人在说话"}
+        assert body[1]["type"] == "image_url" and body[1]["role"] == "first_frame"
+
+    def test_multimodal_without_content_is_auto_wrapped(self, monkeypatch, tmp_path, catalog):
+        """忘了组 content[] 时 submit 自己补，避免再报缺少必填字段。"""
+        img = tmp_path / "face.png"
+        img.write_bytes(b"x")
+        seen = {}
+        monkeypatch.setattr(moarkclient.requests, "post",
+                            lambda url, **kw: (seen.update(kw),
+                                               FakeResponse({"task_id": "T"}))[1])
+        moarkclient.submit("seedance-2.0", {"prompt": "p"},
+                           files={"image": str(img)},
+                           endpoint=moarkclient.EP_MULTIMODAL)
+        body = json.loads(seen["files"]["content"][1].decode("utf-8"))
+        assert {"type": "text", "text": "p"} in body
+        assert any(p.get("type") == "image_url" for p in body)
+
+    def test_missing_content_error_mentions_multipart(self, monkeypatch, catalog):
+        monkeypatch.setattr(
+            moarkclient.requests, "post",
+            lambda url, **kw: FakeResponse(
+                {"error": 400, "message": "请求参数缺少必填字段 'content'"}, status=400))
+        with pytest.raises(MoarkError, match="multipart"):
+            moarkclient.submit("seedance-2.0", {"prompt": "p"})
 
 
 class TestPoll:

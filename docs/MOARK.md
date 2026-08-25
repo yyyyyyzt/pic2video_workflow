@@ -70,8 +70,9 @@ Duix-Avatar 约 ¥0.1/秒 ≈ $0.014/秒，**便宜一个数量级**。
 ## 必须知道的四个坑
 
 1. **文件参数必须走 multipart。** 写在 JSON 里会被网关静默丢掉，
-   然后报「必传参数: xxx」，让人以为字段名写错了。
-   JSON 模式只认 `image_url` 这种 URL 字段。
+   然后报「必传参数: xxx」或「缺少必填字段 'content'」，让人以为字段名写错了。
+   JSON 模式只认 `image_url` 这种 URL 字段。`content[]` 必须编成 multipart
+   的 `content.json` 部件，本地图/音/视频放 `files=`。
 
 2. **状态词是 `failure` 不是 `failed`。** 完整取值：
    `waiting → in_progress → success / failure / cancelled`。
@@ -96,11 +97,16 @@ Duix-Avatar 约 ¥0.1/秒 ≈ $0.014/秒，**便宜一个数量级**。
 | `image-to-video` | `image`（或 JSON 的 `image_url`） | `cond_video`, `cond_audio`, `audio` |
 | `audio-video-to-video` | `ref_audio`, `ref_video` | — |
 | `image-video-to-video` | `ref_image`, `drive_video` | — |
-| `generations` | 无（纯文生） | — |
-| `generations/multimodal` | `content[]` 数组 | — |
+| `generations` | 纯文生：无文件，JSON 的 `prompt` | 图生/参考生：`content[]` + 本地文件走 multipart |
+| `generations/multimodal` | `content[]` 数组（multipart 的 `content.json` 部件） | 本地 `image` / `audio` / `video` |
 
-`moarkclient.resolve_files()` 负责把「角色图 / 驱动音频 / 模板视频」这三个
-语义角色翻译成各端点的实际字段名，调用方不用记。
+`content[]` 每项形如 `{"type": "text", "text": "..."}` 或
+`{"type": "image_url", "role": "first_frame"}`（本地图另外放在 files 里，
+不要把路径写进 JSON，网关会丢掉）。远程 URL 可以写在
+`image_url.url` / `video_url.url` / `audio_url.url`。
+
+`moarkclient.compose_multimodal()` 负责组这个数组；`resolve_files()` 负责把
+「角色图 / 驱动音频 / 模板视频」翻译成扁平端点的字段名。
 
 ## 常用命令
 

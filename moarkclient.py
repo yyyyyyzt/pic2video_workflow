@@ -20,13 +20,16 @@ token 在两边拿到完全一样的资源包余额）。默认走 api.moark.com
     image-to-video          image / image_url，InfiniteTalk 另需 cond_video + cond_audio
     audio-video-to-video    ref_audio + ref_video     ← 数字人（口型替换）
     image-video-to-video    ref_image + drive_video
-    generations             无文件，纯文生
-    generations/multimodal  content[] 数组，见官方文档
+    generations             纯文生用 prompt；图生/参考生要 content[] + 文件走 multipart
+    generations/multimodal  必填 content[]（text / image_url / video_url / audio_url）
 
 三个踩过的坑：
 
 1. **文件类参数必须走 multipart，写在 JSON 里会被网关静默丢掉。**
-   JSON 模式只认 image_url 这种 URL 字段。
+   JSON 模式只认 image_url 这种 URL 字段。`content` 也是文件类字段：
+   塞进 application/json 体会被网关丢掉，然后报「缺少必填字段 'content'」。
+   正确做法是 submit 里让 content 走 multipart（JSON 数组编成一个
+   content.json 部件），本地图/音/视频另附在 files 里。
 
 2. **状态词是 failure 不是 failed。** 完整取值：
    waiting → in_progress → success / failure / cancelled
@@ -73,8 +76,8 @@ ENDPOINT_FILES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     EP_IMAGE_TO_VIDEO: (("image",), ("audio", "cond_video", "cond_audio")),
     EP_AUDIO_VIDEO_TO_VIDEO: (("ref_audio", "ref_video"), ()),
     EP_IMAGE_VIDEO_TO_VIDEO: (("ref_image", "drive_video"), ()),
-    EP_TEXT_TO_VIDEO: ((), ()),
-    EP_MULTIMODAL: ((), ()),
+    EP_TEXT_TO_VIDEO: ((), ("image", "audio", "video")),
+    EP_MULTIMODAL: ((), ("image", "audio", "video")),
 }
 
 # 语义角色 → 各端点的实际字段名。调用方只说「这是角色图/驱动音频/模板视频」，
@@ -83,7 +86,17 @@ ROLE_FIELDS: dict[str, dict[str, str]] = {
     EP_IMAGE_TO_VIDEO: {"image": "image", "audio": "cond_audio", "video": "cond_video"},
     EP_AUDIO_VIDEO_TO_VIDEO: {"audio": "ref_audio", "video": "ref_video"},
     EP_IMAGE_VIDEO_TO_VIDEO: {"image": "ref_image", "video": "drive_video"},
+    # generations / multimodal 的文件挂在 content[] 旁边，字段名保持语义名，
+    # 真正的必填项是 content 数组，由 compose_multimodal() 组。
+    EP_TEXT_TO_VIDEO: {"image": "image", "audio": "audio", "video": "video"},
+    EP_MULTIMODAL: {"image": "image", "audio": "audio", "video": "video"},
 }
+
+# 这些端点用 content[] 描述多模态输入，而不是 image / ref_audio 那种扁平字段。
+CONTENT_ENDPOINTS = {EP_TEXT_TO_VIDEO, EP_MULTIMODAL}
+
+# 平台清单里 operation.name 带这些字，说明 generations 端点其实能吃图/参考素材。
+_I2V_OP_MARKERS = ("图生", "参考", "首尾", "首帧")
 
 # 实测跑通过的模型的补充说明。端点和单价都从平台清单读，这里只记
 # 清单里读不到、但用的人必须知道的事。
@@ -103,6 +116,11 @@ NOTES: dict[str, dict] = {
         "available": True,
         "note": "静默素材，无音频驱动。实测出 720p/15fps/无音轨、扣 ¥1.5，"
                 "帧率达不到入库要求，只能看动作",
+    },
+    "seedance-2.0": {
+        "available": None,
+        "note": "多模态。必填 content[]，本地文件走 multipart。"
+                "提示词不要只放 prompt 字段，网关会报缺少 content。",
     },
     "InfiniteTalk": {
         "available": False,
@@ -168,7 +186,8 @@ def _unwrap(resp: requests.Response) -> dict:
         hint = ""
         if "必传参数" in str(message) or "缺少必填字段" in str(message):
             hint = ("\n提示：文件类参数必须走 multipart，写在 JSON 里会被网关丢掉。"
-                    "用 submit(..., files={...}) 而不是塞进 payload。")
+                    "content[] 和本地图/音/视频都要用 submit(..., files={...})，"
+                    "不要塞进 payload。")
         elif resp.status_code == 401:
             hint = "\n提示：检查 MOARK_API_KEY 是否有效、是否已授权到资源包。"
         raise MoarkError(f"模力方舟报错 (HTTP {resp.status_code}): {message}{hint}")
@@ -228,6 +247,11 @@ def video_models(*, refresh: bool = False) -> dict[str, dict]:
             except (TypeError, ValueError):
                 price = 0.0
             meta = NOTES.get(model_id, {})
+            op_names = [str(item.get("name") or "") for item in (model.get("operations") or [])]
+            i2v_via_content = (
+                endpoint in CONTENT_ENDPOINTS
+                and any(any(mark in name for mark in _I2V_OP_MARKERS) for name in op_names)
+            )
             entry = {
                 "model": model_id,
                 "endpoint": endpoint,
@@ -238,6 +262,7 @@ def video_models(*, refresh: bool = False) -> dict[str, dict]:
                 "files": list(required),
                 "optional_files": list(optional),
                 "roles": ROLE_FIELDS.get(endpoint, {}),
+                "i2v_via_content": i2v_via_content,
                 "available": meta.get("available"),
                 "note": meta.get("note", ""),
                 "description": (model.get("description") or "")[:160],
@@ -257,9 +282,10 @@ def _kind_rank(kind: str) -> int:
 
 
 def avatar_models(*, refresh: bool = False) -> dict[str, dict]:
-    """只要能做数字人的：音频驱动或图生视频。"""
+    """只要能做数字人的：音频驱动、图生视频，以及 generations 上挂着图生/参考生的。"""
     return {k: v for k, v in video_models(refresh=refresh).items()
-            if v["kind"] in ("audio_video2video", "image2video", "multimodal_video")}
+            if v["kind"] in ("audio_video2video", "image2video", "multimodal_video")
+            or v.get("i2v_via_content")}
 
 
 def resolve_files(endpoint: str, *, image: str = "", audio: str = "",
@@ -316,30 +342,143 @@ def endpoint_for(model: str) -> str:
     return entry["endpoint"] if entry else EP_IMAGE_TO_VIDEO
 
 
+def uses_content(endpoint: str, files: dict | None = None,
+                 payload: dict | None = None) -> bool:
+    """这个请求要不要组 content[]。
+
+    generations 纯文生仍走 prompt JSON；一旦带了图/音/视频，或调用方已经给了
+    content，就必须改走 content[] + multipart，否则网关报缺少 content。
+    """
+    if endpoint not in CONTENT_ENDPOINTS:
+        return False
+    if endpoint == EP_MULTIMODAL:
+        return True
+    if payload and payload.get("content"):
+        return True
+    return bool(files)
+
+
+def compose_multimodal(*, prompt: str = "", image: str = "", audio: str = "",
+                       video: str = "", duration: float | int | None = None,
+                       extra: dict | None = None) -> tuple[dict, dict[str, str]]:
+    """把提示词和本地/远程素材拼成 content[] + files。
+
+    返回 (payload, files)。payload['content'] 是数组，submit() 会把它编成
+    multipart 的 content.json 部件——直接 json= 会让网关把这个字段丢掉。
+    本地文件另外放进 files（image / audio / video），不要写进 JSON。
+    """
+    content: list[dict] = []
+    files: dict[str, str] = {}
+    text = (prompt or "").strip()
+    if text:
+        content.append({"type": "text", "text": text})
+
+    def add(path: str, url_key: str, role: str, file_key: str) -> None:
+        if not path:
+            return
+        item: dict = {"type": url_key, "role": role}
+        if str(path).startswith(("http://", "https://")):
+            item[url_key] = {"url": path}
+        else:
+            files[file_key] = path
+        content.append(item)
+
+    # 只有角色图、没有模板视频时当首帧（图生）；有模板视频则当参考图。
+    image_role = "first_frame" if image and not video else "reference_image"
+    add(image, "image_url", image_role, "image")
+    add(video, "video_url", "reference_video", "video")
+    add(audio, "audio_url", "reference_audio", "audio")
+
+    if not content:
+        raise MoarkError(
+            "多模态/图生端点必填 content：至少给一句提示词，或一张图 / 一段音视频。"
+            "本地文件请走 files，不要写进 JSON payload。")
+
+    payload: dict = {"content": content}
+    if text:
+        payload["prompt"] = text
+    if duration:
+        try:
+            payload["duration"] = int(duration)
+        except (TypeError, ValueError):
+            pass
+    for key, value in (extra or {}).items():
+        if value is not None and value != "" and key not in payload:
+            payload[key] = value
+    return payload, files
+
+
+def _form_value(value) -> str:
+    """multipart 里的标量。list/dict 编成 JSON 字符串，bool 小写。"""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _content_from_fields(fields: dict, multipart: dict) -> list[dict] | None:
+    """submit 兜底：用 prompt 和已挂上的文件部件拼一份最小 content[]。"""
+    parts: list[dict] = []
+    prompt = fields.get("prompt") or ""
+    if prompt:
+        parts.append({"type": "text", "text": prompt})
+    for key, url_key, role in (
+        ("image", "image_url", "first_frame"),
+        ("video", "video_url", "reference_video"),
+        ("audio", "audio_url", "reference_audio"),
+    ):
+        if key in multipart:
+            parts.append({"type": url_key, "role": role})
+    return parts or None
+
+
 def submit(model: str, payload: dict | None = None, *,
            files: dict[str, str] | None = None,
            endpoint: str | None = None,
            webhook: str = "", timeout: int = 300) -> str:
     """提交异步任务，返回 task_id。
 
-    payload 放标量参数（prompt、num_frames 等），files 放本地路径或 URL。
-    有 files 就自动走 multipart。endpoint 不传就按模型清单查。
+    payload 放标量参数（prompt、num_frames 等）和 content[] 数组。
+    files 放本地路径或 URL。有 files 或 content 数组就走 multipart——
+    content 写进 JSON body 会被网关丢掉，报缺少必填字段 content。
+    endpoint 不传就按模型清单查。
     """
     path = endpoint or endpoint_for(model)
     url = base_url() + path
 
-    fields = {"model": model}
+    fields: dict[str, str] = {"model": model}
+    content_obj = None
     for key, value in (payload or {}).items():
         if value is None or value == "":
             continue
-        fields[key] = str(value).lower() if isinstance(value, bool) else str(value)
+        if key == "content" and isinstance(value, (list, dict)):
+            content_obj = value
+            continue
+        fields[key] = _form_value(value)
+
+    multipart = {k: _file_part(v) for k, v in (files or {}).items() if v}
+
+    # 调用方忘了组 content[] 时兜底：否则网关直接报缺少必填字段 content。
+    if content_obj is None and path in CONTENT_ENDPOINTS:
+        if path == EP_MULTIMODAL or multipart:
+            content_obj = _content_from_fields(fields, multipart)
+
+    # content 是文件类字段：必须出现在 multipart 里。已有同名文件部件时
+    # （调用方显式 files={'content': 图}）改把数组放到表单字段，避免盖掉。
+    if content_obj is not None:
+        encoded = json.dumps(content_obj, ensure_ascii=False)
+        if "content" in multipart:
+            fields["content"] = encoded
+        else:
+            multipart["content"] = (
+                "content.json", encoded.encode("utf-8"), "application/json")
 
     headers = _headers()
     if webhook:
         headers["X-WebHook"] = webhook
 
-    if files:
-        multipart = {k: _file_part(v) for k, v in files.items() if v}
+    if multipart:
         resp = requests.post(url, headers=headers, data=fields,
                              files=multipart, timeout=timeout)
     else:
@@ -475,7 +614,7 @@ def _cli() -> None:
         names = list_models()
         hits = [n for n in names if args.filter.lower() in n.lower()]
         for n in sorted(hits):
-            local = MODELS.get(n)
+            local = NOTES.get(n)
             mark = "" if not local else ("  ← 已校准" if local["available"]
                                         else "  ← 已校准（平台侧不可用）")
             print(f"  {n}{mark}")
@@ -521,16 +660,23 @@ def _cli() -> None:
         print(f"提醒：{args.model} 上次实测平台侧不可用（{spec['note']}），仍然继续尝试。")
 
     endpoint = spec["endpoint"] if spec else endpoint_for(args.model)
-    file_map, missing = resolve_files(endpoint, image=args.image,
-                                      audio=args.audio, video=args.video)
-    if missing:
-        raise SystemExit(
-            f"错误：{args.model} 走 {endpoint} 还缺 {', '.join(missing)}。\n"
-            f"  该端点的角色映射：{ROLE_FIELDS.get(endpoint, {})}")
+    if uses_content(endpoint, files={"image": args.image, "audio": args.audio,
+                                     "video": args.video} if (args.image or args.audio or args.video) else None):
+        payload, file_map = compose_multimodal(
+            prompt=args.prompt, image=args.image, audio=args.audio,
+            video=args.video)
+    else:
+        file_map, missing = resolve_files(endpoint, image=args.image,
+                                          audio=args.audio, video=args.video)
+        if missing:
+            raise SystemExit(
+                f"错误：{args.model} 走 {endpoint} 还缺 {', '.join(missing)}。\n"
+                f"  该端点的角色映射：{ROLE_FIELDS.get(endpoint, {})}")
+        payload = {"prompt": args.prompt}
 
     print(f"提交 {args.model} → {endpoint}，prompt={args.prompt[:40]!r}，"
           f"文件={ {k: Path(v).name for k, v in file_map.items()} }")
-    result = run(args.model, {"prompt": args.prompt}, files=file_map,
+    result = run(args.model, payload, files=file_map,
                  endpoint=endpoint,
                  on_submit=lambda t: print(f"  任务号 {t}（失败可凭它重查）"),
                  on_tick=lambda s, e: print(f"  {s} ({e}s)"))

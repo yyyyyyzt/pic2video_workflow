@@ -245,6 +245,9 @@ class TestMoarkFieldMapping:
             {"id": "InfiniteTalk", "operations": [
                 {"type": "image2video", "path":
                  "v1/async/videos/image-to-video", "price": "0.5"}]},
+            {"id": "seedance-2.0", "operations": [
+                {"type": "multimodal_video", "path":
+                 "v1/async/videos/generations/multimodal", "price": "51"}]},
         ])
 
     def test_missing_required_file_is_reported(self, client):
@@ -303,6 +306,37 @@ class TestMoarkFieldMapping:
         assert seen["files"]["ref_video"] == str(img)
         # 用持久的 warnings，不能用 stage —— stage 会被下一步覆盖
         assert any("模板视频" in w for w in studio.STORE.get("j3").warnings)
+
+    def test_multimodal_sends_content_not_prompt_json(self, client, monkeypatch, tmp_path):
+        """国内多模态端点缺 content 会 HTTP 400。角色图走 files，content[] 走 multipart。"""
+        img = tmp_path / "a.png"
+        img.write_bytes(_png())
+        audio = tmp_path / "a.mp3"
+        audio.write_bytes(b"ID3fake")
+        job = Job(id="j4", created_at="t", provider="moark",
+                  recipe="seedance-2.0", prompt="人在说话", seconds=5,
+                  image=str(img))
+        studio.STORE.add(job)
+
+        seen = {}
+        import moarkclient
+
+        def fake_run(*a, **k):
+            seen.update(k)
+            if len(a) > 1:
+                seen["payload"] = a[1]
+            return {"url": "u", "price": 1.0, "currency": "CNY"}
+
+        monkeypatch.setattr(moarkclient, "run", fake_run)
+        monkeypatch.setattr(moarkclient, "download", lambda url, out: out)
+        studio._run_moark("j4", job, audio_path=str(audio))
+        assert seen["endpoint"] == moarkclient.EP_MULTIMODAL
+        assert "image" in seen["files"]
+        assert "audio" in seen["files"]
+        content = seen["payload"]["content"]
+        assert content[0] == {"type": "text", "text": "人在说话"}
+        assert any(p.get("type") == "image_url" for p in content)
+        assert any(p.get("type") == "audio_url" for p in content)
 
 
 def test_page_html_is_self_contained():
