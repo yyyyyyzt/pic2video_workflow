@@ -118,9 +118,9 @@ class TestCatalog:
 
     def test_shape_matches_frontend_expectations(self):
         data = catalog()
-        assert set(data) == {"base", "groups", "presets"}
+        assert set(data) == {"base", "groups", "presets", "photo_edits"}
         for group, spec in data["groups"].items():
-            assert set(spec) == {"label", "options"}
+            assert set(spec) == {"label", "hint", "options"}
             for opt in spec["options"]:
                 assert set(opt) == {"key", "label", "text", "note"}
         for name, spec in data["presets"].items():
@@ -138,3 +138,71 @@ def test_neck_guard_block_exists():
     assert "plus-neck" in keys
     text = promptlib.block("negative", "plus-neck").text
     assert "锁骨" in text or "颈部" in text
+
+
+class TestBodyMode:
+    """坐/站。运营常遇到「传了站姿照片但要坐着说」。"""
+
+    def test_group_exists_with_keep_default(self):
+        keys = [b.key for b in GROUPS["body"]]
+        assert "keep" in keys and keys[0] == "keep", "默认必须是不改姿态"
+
+    def test_covers_both_directions(self):
+        keys = [b.key for b in GROUPS["body"]]
+        assert "to-sitting" in keys and "to-standing" in keys
+
+    def test_sitting_text_mentions_chair(self):
+        assert "坐" in promptlib.block("body", "to-sitting").text
+
+    def test_standing_text_mentions_standing(self):
+        assert "站" in promptlib.block("body", "to-standing").text
+
+    def test_keep_does_not_force_a_posture(self):
+        text = promptlib.block("body", "keep").text
+        assert "保持" in text
+
+    def test_warning_is_honest_about_limits(self):
+        """必须说清单图直出改不了姿态，否则运营会以为提示词没生效是 bug。"""
+        warning = promptlib.BODY_MODE_WARNING
+        assert "改不了" in warning or "不会" in warning
+        assert "改照片" in warning
+
+    def test_catalog_exposes_hint(self):
+        assert catalog()["groups"]["body"]["hint"]
+
+    def test_body_comes_first_in_composition(self):
+        """坐/站决定整体取景，必须排在体态和手势之前。"""
+        text = compose({"body": "to-sitting", "posture": "still",
+                        "gesture": "down"})
+        assert text.index("坐在椅子") < text.index("躯干")
+        assert text.index("坐在椅子") < text.index("垂放")
+
+    def test_all_presets_pin_body_explicitly(self):
+        for name, spec in PRESETS.items():
+            assert "body" in spec["blocks"], f"{name} 没写 body，会漂"
+
+
+class TestPhotoEdits:
+    """改照片姿态的提示词。比指望口播模型自己把人从站着变成坐着靠得住。"""
+
+    def test_covers_both_directions(self):
+        assert "to-sitting" in promptlib.PHOTO_EDITS
+        assert "to-standing" in promptlib.PHOTO_EDITS
+
+    def test_each_has_label_and_prompt(self):
+        for name, spec in promptlib.PHOTO_EDITS.items():
+            assert spec["label"] and spec["prompt"], name
+
+    def test_prompts_pin_identity(self):
+        """改姿态时必须锁住长相穿着，否则换出来的是另一个人。"""
+        for name, spec in promptlib.PHOTO_EDITS.items():
+            if name == "close-mouth":
+                continue
+            assert "长相" in spec["prompt"], name
+
+    def test_close_mouth_preset_exists(self):
+        # 平台要求开头闭口，参考图嘴张着会一路影响成片
+        assert "close-mouth" in promptlib.PHOTO_EDITS
+
+    def test_catalog_exposes_photo_edits(self):
+        assert set(catalog()["photo_edits"]) == set(promptlib.PHOTO_EDITS)

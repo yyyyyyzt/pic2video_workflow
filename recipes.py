@@ -151,6 +151,24 @@ _ROUTE_A = [
            note="你已经在用的可灵，放进来做同条件横向基准"),
     Recipe("kling-avatar-pro", "A", "kwaivgi/kling-v2-ai-avatar-pro", 0.56,
            ("image", "audio"), "可灵 V2 数字人专业版"),
+
+    # 以下是翻遍 WaveSpeed 全部 47 个 digital-human 模型后补进来的，都能「单图 + 音频」直出
+    Recipe("pruna-avatar", "A", "pruna-ai/p-video/avatar", 0.025,
+           ("image", "audio"), "Pruna p-video Avatar", resolution="720p",
+           params={"video_prompt": "The person is talking."},
+           note="全表最便宜的数字人（base 0.025）。有 video_prompt 参数可控体态，"
+                "值得优先试——便宜到可以拿它做大批量筛选"),
+    Recipe("soulx-flashhead", "A", "wavespeed-ai/soulx-flashhead", 0.075,
+           ("image", "audio"), "SoulX FlashHead 实时说话头", resolution="720p",
+           note="标称 RTX4090 上 96FPS、音频支持到 30 分钟。长素材的候选"),
+    Recipe("skyreels-talking", "A", "wavespeed-ai/skyreels-v3/talking-avatar", 0.15,
+           ("image", "audio"), "SkyReels V3 Talking Avatar 19B", resolution="720p",
+           note="19B 参数，带 prompt 参数可控体态和情绪，但**上限 20 秒**，"
+                "只适合筛选不适合入库"),
+    Recipe("ltx2-19b-lipsync", "A", "wavespeed-ai/ltx-2-19b/lipsync", 0.1,
+           ("image", "audio"), "LTX-2 19B Lipsync 1080p",
+           resolution="1080p", native_1080p=True,
+           note="原生 1080p，可省超分。和 ltx-lipsync 同族的新版本"),
 ]
 
 # --------------------------------------------------------------------------
@@ -202,6 +220,19 @@ _ROUTE_C = [
     Recipe("infinitetalk-v2v", "C", "wavespeed-ai/infinitetalk/video-to-video", 0.15,
            ("video", "audio"), "InfiniteTalk 视频配音 720p", resolution="720p",
            note="拿真人模板视频当输入，官方建议用它规避单图长视频的色偏"),
+    Recipe("latentsync-ws", "C", "wavespeed-ai/latentsync", 0.05,
+           ("video", "audio"), "LatentSync 口型替换（开源）",
+           note="MuseTalk 那一类的开源口型替换，托管版。MuseTalk 本身没有任何"
+                "供应商提供 API（只能自托管+GPU），LatentSync 是最接近的可用替代"),
+    Recipe("latentsync-bd", "C", "bytedance/latentsync", 0.15,
+           ("video", "audio"), "LatentSync 字节托管版",
+           note="同一个开源模型，字节的托管，贵三倍，画质是否更好未实测"),
+    Recipe("veed-lipsync-v2", "C", "veed/lipsync-v2", 0.075,
+           ("video", "audio"), "VEED Lipsync V2",
+           note="成片时长跟随音频。商业口型替换，和 sync 系列同类"),
+    Recipe("bytedance-lipsync", "C", "bytedance/lipsync/audio-to-video", 0.15,
+           ("video", "audio"), "字节 LipSync",
+           note="字节的口型替换，和 OmniHuman 同厂但便宜得多（后者按秒 $0.156）"),
 ]
 
 # --------------------------------------------------------------------------
@@ -236,6 +267,12 @@ GROUPS = {
     "screen": ("skyreels-std", "infinitetalk-fast", "omnihuman-15"),
     # 筛选出赢家后再拿完整 60 秒复跑的质量档（原生或接近 1080p）
     "tencent": ("omnihuman-15", "infinitetalk-720", "hunyuan-avatar", "ltx-lipsync"),
+    # 便宜档：单价都在 base 0.1 以下，适合先大批量筛
+    "cheap": ("pruna-avatar", "skyreels-std", "infinitetalk-fast", "soulx-flashhead",
+              "ltx2-19b-lipsync"),
+    # 口型替换（路线 C）：都要模板视频，但换台词只按秒计费，长期最省
+    "lipsync": ("latentsync-ws", "veed-lipsync-v2", "lipsync-2-pro",
+                "bytedance-lipsync", "infinitetalk-v2v"),
 }
 
 

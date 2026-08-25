@@ -46,19 +46,30 @@ OUTPUT_DIR = DATA_DIR / "outputs"
 
 # 海外通道的候选。label 里带上单价，运营选之前就知道贵不贵。
 WAVESPEED_MODELS = [
-    {"provider": "wavespeed", "recipe": "skyreels-std",
-     "label": "SkyReels V3 标准版　约 $0.044/秒（已实测）"},
+    {"provider": "wavespeed", "recipe": "pruna-avatar",
+     "label": "Pruna p-video Avatar　全表最便宜，约 $0.025 起（未实测），先拿它筛"},
     {"provider": "wavespeed", "recipe": "infinitetalk-fast",
      "label": "InfiniteTalk 快速版　约 $0.017/秒（已实测，只出 384×576）"},
+    {"provider": "wavespeed", "recipe": "skyreels-std",
+     "label": "SkyReels V3 标准版　约 $0.044/秒（已实测）"},
+    {"provider": "wavespeed", "recipe": "soulx-flashhead",
+     "label": "SoulX FlashHead　约 $0.075 起（未实测），音频支持到 30 分钟"},
+    {"provider": "wavespeed", "recipe": "ltx2-19b-lipsync",
+     "label": "LTX-2 19B Lipsync　约 $0.1 起（未实测），原生 1080p 可省超分"},
+    {"provider": "wavespeed", "recipe": "skyreels-talking",
+     "label": "SkyReels V3 Talking 19B　约 $0.15 起（未实测），带体态提示词但上限 20 秒"},
+    {"provider": "wavespeed", "recipe": "hunyuan-avatar",
+     "label": "腾讯混元 Avatar 720p　单价未实测，和腾讯数智人同源"},
     {"provider": "wavespeed", "recipe": "infinitetalk-720",
-     "label": "InfiniteTalk 720p　单价未实测，可能到 $0.30/秒"},
+     "label": "InfiniteTalk 720p　单价未实测，精确 9:16"},
     {"provider": "wavespeed", "recipe": "omnihuman-15",
      "label": "字节 OmniHuman 1.5　$0.156/秒（已实测，最贵）"},
-    {"provider": "wavespeed", "recipe": "hunyuan-avatar",
-     "label": "腾讯混元 Avatar 720p　单价未实测"},
-    {"provider": "wavespeed", "recipe": "ltx-lipsync",
-     "label": "LTX-2.3 Lipsync　原生 1080p，单价未实测"},
 ]
+
+# 会重新生成身体、因此「坐/站」提示词有机会生效的模型。
+# 其余的是从给定那一帧往下 animate，姿态改不动。
+BODY_AWARE_RECIPES = {"skyreels-std", "skyreels-pro", "skyreels-talking",
+                      "pruna-avatar", "omnihuman-15", "omnihuman"}
 
 # 国内通道不写死：端点和单价都从平台自己的模型清单读，见 moarkclient.video_models()
 MOARK_KIND_LABELS = {
@@ -126,6 +137,8 @@ class Job:
     voice: str = ""
     metrics: dict = field(default_factory=dict)
     elapsed: float = 0.0
+    batch: str = ""             # 同一次勾选多个模型产生的任务共用一个批次号
+    batch_index: int = 0
 
 
 class JobStore:
@@ -198,6 +211,21 @@ def _save_upload(upload, kind: str) -> str:
     with open(dest, "wb") as f:
         shutil.copyfileobj(upload.file, f)
     return str(dest)
+
+
+def _run_batch(job_ids: list) -> None:
+    """按顺序跑一批。
+
+    串行而不是并发，两个原因：Bronze 账号只有 2 个并发，一起冲会被限流；
+    成本是靠调用前后的余额差测出来的，并发时几笔扣费会串味，算不准。
+    """
+    for position, job_id in enumerate(job_ids, 1):
+        job = STORE.get(job_id)
+        if job is None:
+            continue
+        STORE.update(job_id, stage=f"排队中（{position}/{len(job_ids)}）")
+    for job_id in job_ids:
+        _run_job(job_id)
 
 
 def _run_job(job_id: str) -> None:
@@ -409,6 +437,8 @@ def create_app():
                         "note": v.note} for v in tts.VOICES],
             "default_voice": tts.DEFAULT_VOICE,
             "chars_per_second": tts.CHARS_PER_SECOND,
+            # 前端用它提醒：勾的模型不会重新生成身体时，「坐/站」改不动
+            "body_aware": sorted(BODY_AWARE_RECIPES),
         })
 
     @app.get("/api/balance")
@@ -431,45 +461,72 @@ def create_app():
 
     @app.post("/api/jobs")
     async def create_job(
+        models: str = Form(""),
         provider: str = Form("wavespeed"),
-        recipe: str = Form(...),
+        recipe: str = Form(""),
         prompt: str = Form(""),
         seconds: float = Form(0.0),
         script: str = Form(""),
         voice: str = Form(""),
         preset: str = Form(""),
         blocks: str = Form("{}"),
+        sequential: str = Form("1"),
         image: Optional[UploadFile] = File(None),
         audio: Optional[UploadFile] = File(None),
         template: Optional[UploadFile] = File(None),
     ) -> JSONResponse:
-        job = Job(
-            id=f"{datetime.now().strftime('%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}",
-            created_at=datetime.now().isoformat(timespec="seconds"),
-            provider=provider, recipe=recipe, prompt=prompt.strip(),
-            seconds=float(seconds or 0), script=script.strip(), voice=voice,
-            preset=preset,
-        )
-        try:
-            job.blocks = json.loads(blocks or "{}")
-        except ValueError:
-            job.blocks = {}
-        if image is not None and image.filename:
-            job.image = _save_upload(image, "image")
-        if audio is not None and audio.filename:
-            job.audio = _save_upload(audio, "audio")
-        if template is not None and template.filename:
-            job.template = _save_upload(template, "template")
+        # models 是 "provider|recipe" 的列表，勾了几个就建几条任务。
+        # 兼容单个 provider/recipe 的老写法。
+        picked = [m for m in (models or "").split(",") if m.strip()]
+        if not picked and recipe:
+            picked = [f"{provider}|{recipe}"]
+        if not picked:
+            return JSONResponse({"error": "至少勾一个模型"}, status_code=400)
 
-        if not job.image:
+        try:
+            parsed_blocks = json.loads(blocks or "{}")
+        except ValueError:
+            parsed_blocks = {}
+
+        # 素材只存一份，几条任务共用，保证横向可比
+        image_path = _save_upload(image, "image") if image and image.filename else ""
+        audio_path = _save_upload(audio, "audio") if audio and audio.filename else ""
+        template_path = (_save_upload(template, "template")
+                         if template and template.filename else "")
+
+        if not image_path:
             return JSONResponse({"error": "需要上传角色图"}, status_code=400)
-        if not job.audio and not job.script:
+        if not audio_path and not script.strip():
             return JSONResponse(
                 {"error": "需要上传音频，或者填一段台词让它自动合成"}, status_code=400)
 
-        STORE.add(job)
-        threading.Thread(target=_run_job, args=(job.id,), daemon=True).start()
-        return JSONResponse({"id": job.id})
+        batch = uuid.uuid4().hex[:6] if len(picked) > 1 else ""
+        created = []
+        for index, item in enumerate(picked):
+            item_provider, _, item_recipe = item.partition("|")
+            if not item_recipe:
+                item_provider, item_recipe = "wavespeed", item_provider
+            job = Job(
+                id=f"{datetime.now().strftime('%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}",
+                created_at=datetime.now().isoformat(timespec="seconds"),
+                provider=item_provider.strip(), recipe=item_recipe.strip(),
+                prompt=prompt.strip(), seconds=float(seconds or 0),
+                script=script.strip(), voice=voice, preset=preset,
+                blocks=dict(parsed_blocks), batch=batch, batch_index=index,
+                image=image_path, audio=audio_path, template=template_path,
+            )
+            STORE.add(job)
+            created.append(job.id)
+
+        if sequential in ("1", "true", "on") and len(created) > 1:
+            # 串行：Bronze 账号只有 2 个并发，一起冲会被限流；而且串行时
+            # 每条的实测扣费才算得准（成本是靠调用前后的余额差测的）。
+            threading.Thread(target=_run_batch, args=(created,), daemon=True).start()
+        else:
+            for job_id in created:
+                threading.Thread(target=_run_job, args=(job_id,), daemon=True).start()
+
+        return JSONResponse({"ids": created, "id": created[0], "batch": batch})
 
     @app.get("/api/jobs")
     def list_jobs() -> JSONResponse:
@@ -519,10 +576,16 @@ def create_app():
 
     @app.get("/media/{job_id}")
     def media(job_id: str):
+        """下载成片。
+
+        故意用 attachment 而不是内联播放：任务列表里内联播放会让浏览器
+        自动预取每一条，几十条列表能把带宽吃光。要看就点下载。
+        """
         job = STORE.get(job_id)
         if job is None or not job.video or not Path(job.video).is_file():
             return JSONResponse({"error": "not ready"}, status_code=404)
-        return FileResponse(job.video, media_type="video/mp4")
+        name = f"{job.id}-{job.recipe}.mp4".replace("/", "-")
+        return FileResponse(job.video, media_type="video/mp4", filename=name)
 
     return app
 
@@ -559,55 +622,83 @@ PAGE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
-  header { padding:16px 24px; border-bottom:1px solid var(--line);
+  header { padding:14px 24px; border-bottom:1px solid var(--line);
            display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
   h1 { font-size:18px; margin:0; }
   .bal { color:var(--dim); font-size:13px; }
-  main { display:grid; grid-template-columns:minmax(360px,460px) 1fr; gap:0; align-items:start; }
-  @media (max-width:900px){ main{ grid-template-columns:1fr; } }
-  .panel { padding:20px 24px; border-right:1px solid var(--line); }
-  .jobs  { padding:20px 24px; }
-  fieldset { border:1px solid var(--line); border-radius:10px; margin:0 0 16px; padding:14px 16px; }
+  /* 表单封顶，多余的宽度全给任务列表：表单只填一次，任务列表要一直看，
+     而且卡片里文字多。不封顶的话下拉框会被拉到 700px 宽，很浪费。 */
+  main { display:grid; grid-template-columns:minmax(380px,540px) minmax(360px,1fr);
+         gap:0; align-items:start; }
+  @media (max-width:1000px){ main{ grid-template-columns:1fr; }
+                             .panel{ border-right:0; border-bottom:1px solid var(--line); } }
+  .panel { padding:18px 20px; border-right:1px solid var(--line); }
+  .jobs  { padding:18px 24px; }
+  .jobs .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr));
+                gap:12px; }
+
+  /* 左右两列布局：标签在左、控件在右，一行一件事 */
+  fieldset { border:1px solid var(--line); border-radius:10px; margin:0 0 14px; padding:12px 16px; }
   legend { padding:0 6px; color:var(--dim); font-size:13px; }
-  label { display:block; margin:10px 0 4px; font-size:13px; color:var(--dim); }
+  .field { display:grid; grid-template-columns:82px 1fr; gap:10px;
+           align-items:start; padding:7px 0; }
+  .field > label { color:var(--dim); font-size:13px; padding-top:7px; }
+  .field .note { grid-column:2; color:var(--dim); font-size:12px; margin:3px 0 0; }
+  .field.stack { grid-template-columns:1fr; }
+  @media (max-width:620px){ .field{ grid-template-columns:1fr; }
+                            .field > label{ padding-top:0; } }
+
   input[type=text], input[type=number], select, textarea {
     width:100%; background:#0e0e0e; color:var(--fg); border:1px solid var(--line);
-    border-radius:8px; padding:8px 10px; font:inherit; }
-  textarea { min-height:78px; resize:vertical; }
+    border-radius:8px; padding:7px 10px; font:inherit; }
+  textarea { min-height:70px; resize:vertical; }
   input[type=file] { width:100%; font-size:13px; color:var(--dim); }
-  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .hint { color:var(--dim); font-size:12px; margin:4px 0 0; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
   button { background:var(--ok); color:#052; border:0; border-radius:8px;
            padding:11px 18px; font:600 15px/1 inherit; cursor:pointer; width:100%; }
   button:disabled { background:#444; color:#999; cursor:not-allowed; }
   button.ghost { background:#242424; color:var(--fg); border:1px solid var(--line);
                  font-weight:400; font-size:13px; padding:7px 12px; width:auto; }
+  a.dl { display:inline-block; background:#164; color:#cfe; text-decoration:none;
+         border-radius:8px; padding:8px 14px; font-size:13px; margin-top:8px; }
+  a.dl:hover { background:#1a7a4a; }
+
   .preview { background:#0e0e0e; border:1px dashed var(--line); border-radius:8px;
              padding:10px; font-size:12.5px; color:#cfc; white-space:pre-wrap;
-             max-height:170px; overflow:auto; }
+             max-height:150px; overflow:auto; }
+  .models { max-height:280px; overflow:auto; border:1px solid var(--line);
+            border-radius:8px; padding:6px; }
+  .models .grp { color:var(--dim); font-size:12px; margin:6px 4px 3px; }
+  .models label { display:flex; gap:8px; align-items:flex-start; padding:5px 6px;
+                  border-radius:6px; cursor:pointer; font-size:13px; color:var(--fg); }
+  .models label:hover { background:#222; }
+  .models input { margin-top:3px; flex:0 0 auto; }
+  .picked { color:var(--ok); font-size:12px; margin:6px 0 0; }
+
   .job { background:var(--card); border:1px solid var(--line); border-radius:10px;
-         padding:14px; margin-bottom:14px; }
+         padding:12px; margin-bottom:12px; }
   .job.failed { border-color:#833; }
-  .job h3 { margin:0 0 6px; font-size:14px; display:flex; gap:8px;
+  .job h3 { margin:0 0 6px; font-size:14px; display:flex; gap:6px;
             align-items:center; flex-wrap:wrap; }
   .tag { font-size:11px; background:#2a2a2a; padding:2px 8px; border-radius:999px;
          color:#ccc; font-weight:400; }
   .tag.run { background:#334; color:#bcf; }
   .tag.done{ background:#164; color:#bfd; }
   .tag.err { background:#611; color:#fbb; }
-  video { width:100%; border-radius:8px; background:#000; margin-top:8px; }
-  .meta { color:var(--dim); font-size:12px; margin-top:6px; }
+  .tag.batch { background:#432; color:#fd9; }
+  .meta { color:var(--dim); font-size:12px; margin-top:5px; }
   .defect { font-size:12px; margin:6px 0 0; padding-left:16px; }
   .defect li.major { color:#f99; } .defect li.minor { color:#fc9; }
   .defect li.info { color:#8a8; }
   pre.err { color:#f99; font-size:12px; white-space:pre-wrap; margin:6px 0 0; }
+  details summary { cursor:pointer; }
 </style>
 </head>
 <body>
 <header>
   <h1>数字人提示词调试台</h1>
   <span class="bal" id="bal">余额查询中…</span>
-  <span class="bal">改完提示词直接点生成，结果在右边。历史记录会一直留着。</span>
 </header>
 
 <main>
@@ -615,60 +706,90 @@ PAGE = r"""<!DOCTYPE html>
   <form id="f">
     <fieldset>
       <legend>1 · 素材</legend>
-      <label>角色图（必填，正面清晰、嘴巴闭合）</label>
-      <input type="file" name="image" accept="image/*" required>
-      <label>驱动音频（可选，不传就用下面的台词自动合成）</label>
-      <input type="file" name="audio" accept="audio/*">
-      <label>模板视频（只有口型替换类模型要，比如国内的 Duix-Avatar）</label>
-      <input type="file" name="template" accept="video/*">
-      <p class="hint">口型替换的稳定性来自模板视频，所以模板拍一次就能反复用，
-      之后每换一段台词只按秒计费。</p>
+      <div class="field">
+        <label>角色图</label>
+        <div>
+          <input type="file" name="image" accept="image/*" required>
+          <p class="note">必填。正面清晰、五官无遮挡、嘴巴闭合。</p>
+        </div>
+      </div>
+      <div class="field">
+        <label>驱动音频</label>
+        <div>
+          <input type="file" name="audio" accept="audio/*">
+          <p class="note">可选。不传就用下面的台词自动合成。</p>
+        </div>
+      </div>
+      <div class="field">
+        <label>模板视频</label>
+        <div>
+          <input type="file" name="template" accept="video/*">
+          <p class="note">只有口型替换类模型要（国内 Duix-Avatar）。
+          稳定性来自模板，拍一次可反复用，之后换台词只按秒计费。</p>
+        </div>
+      </div>
     </fieldset>
 
     <fieldset>
       <legend>2 · 台词与时长</legend>
-      <div class="row">
-        <div>
-          <label>目标秒数</label>
+      <div class="field">
+        <label>目标秒数</label>
+        <div class="two">
           <input type="number" id="seconds" name="seconds" value="10" min="1" max="600" step="1">
-        </div>
-        <div>
-          <label>音色</label>
           <select id="voice" name="voice"></select>
         </div>
       </div>
-      <p class="hint" id="charhint"></p>
-      <label>台词（留空则必须上传音频）</label>
-      <textarea id="script" name="script" placeholder="填台词，或者上面直接传音频"></textarea>
-      <button type="button" class="ghost" id="fit">按秒数裁剪台词</button>
+      <div class="field">
+        <label>台词</label>
+        <div>
+          <textarea id="script" name="script" placeholder="填台词，或者上面直接传音频"></textarea>
+          <p class="note" id="charhint"></p>
+          <button type="button" class="ghost" id="fit">按秒数裁剪台词</button>
+        </div>
+      </div>
     </fieldset>
 
     <fieldset>
       <legend>3 · 提示词</legend>
-      <label>预设</label>
-      <select id="preset"></select>
-      <p class="hint" id="presetnote"></p>
+      <div class="field">
+        <label>预设</label>
+        <div>
+          <select id="preset"></select>
+          <p class="note" id="presetnote"></p>
+        </div>
+      </div>
       <div id="blocks"></div>
-      <label>额外补充（可留空）</label>
-      <textarea id="extra" placeholder="想加的话写在这里，会拼到最后"></textarea>
-      <label>最终提示词（可直接改）</label>
-      <div class="preview" id="preview"></div>
-      <button type="button" class="ghost" id="edit">改成手动编辑</button>
-      <textarea id="manual" style="display:none" placeholder="手动提示词"></textarea>
+      <div class="field">
+        <label>额外补充</label>
+        <textarea id="extra" placeholder="想加的话写在这里，会拼到最后"></textarea>
+      </div>
+      <div class="field stack">
+        <label>最终提示词</label>
+        <div class="preview" id="preview"></div>
+        <button type="button" class="ghost" id="edit">改成手动编辑</button>
+        <textarea id="manual" style="display:none" placeholder="手动提示词"></textarea>
+      </div>
     </fieldset>
 
     <fieldset>
-      <legend>4 · 模型</legend>
-      <select id="model" name="model"></select>
-      <p class="hint" id="modelnote"></p>
+      <legend>4 · 模型（可多选）</legend>
+      <div class="field stack">
+        <div class="models" id="models"></div>
+        <p class="picked" id="picked"></p>
+        <label style="display:flex;gap:8px;align-items:center;color:var(--dim)">
+          <input type="checkbox" id="sequential" checked>
+          按顺序一个个跑（并发会被限流，串行的实测扣费也才算得准）
+        </label>
+      </div>
     </fieldset>
 
     <button type="submit" id="go">生成</button>
-    <p class="hint" id="err" style="color:#f99"></p>
+    <p class="note" id="err" style="color:#f99"></p>
   </form>
 </section>
 
 <section class="jobs">
+  <p class="meta" id="jobhint"></p>
   <div id="list"></div>
 </section>
 </main>
@@ -683,21 +804,31 @@ async function boot() {
   const voice = $("voice");
   for (const v of CFG.voices) {
     const o = document.createElement("option");
-    o.value = v.key; o.textContent = v.label + (v.note ? "　" + v.note : "");
+    o.value = v.key; o.textContent = v.label;
     if (v.key === CFG.default_voice) o.selected = true;
     voice.appendChild(o);
   }
 
-  const model = $("model");
+  // 模型多选。国内和海外分组显示，勾几个就建几条任务。
+  const holder = $("models");
+  let lastProvider = null;
   for (const m of CFG.models) {
-    const o = document.createElement("option");
-    o.value = m.provider + "|" + m.recipe; o.textContent = m.label;
-    model.appendChild(o);
+    if (m.provider !== lastProvider) {
+      const h = document.createElement("div");
+      h.className = "grp";
+      h.textContent = m.provider === "moark" ? "国内通道（模力方舟）" : "海外通道（WaveSpeed）";
+      holder.appendChild(h);
+      lastProvider = m.provider;
+    }
+    const id = m.provider + "|" + m.recipe;
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" value="${id}"> <span>${m.label}</span>`;
+    label.querySelector("input").addEventListener("change", updatePicked);
+    holder.appendChild(label);
   }
-  model.addEventListener("change", () => {
-    const picked = CFG.models.find(m => m.provider + "|" + m.recipe === model.value);
-    $("modelnote").textContent = picked ? picked.label : "";
-  });
+  // 默认勾最便宜的那个
+  const first = holder.querySelector("input[type=checkbox]");
+  if (first) { first.checked = true; }
 
   const preset = $("preset");
   for (const [key, spec] of Object.entries(CFG.prompt.presets)) {
@@ -707,10 +838,13 @@ async function boot() {
   }
   preset.addEventListener("change", applyPreset);
 
-  const holder = $("blocks");
+  const groups = $("blocks");
   for (const [group, spec] of Object.entries(CFG.prompt.groups)) {
-    const label = document.createElement("label");
-    label.textContent = spec.label;
+    const row = document.createElement("div");
+    row.className = "field";
+    const lab = document.createElement("label");
+    lab.textContent = spec.label;
+    const wrap = document.createElement("div");
     const sel = document.createElement("select");
     sel.dataset.group = group; sel.id = "g-" + group;
     for (const opt of spec.options) {
@@ -720,7 +854,14 @@ async function boot() {
       sel.appendChild(o);
     }
     sel.addEventListener("change", render);
-    holder.appendChild(label); holder.appendChild(sel);
+    wrap.appendChild(sel);
+    if (spec.hint) {
+      const hint = document.createElement("p");
+      hint.className = "note"; hint.textContent = spec.hint;
+      wrap.appendChild(hint);
+    }
+    row.appendChild(lab); row.appendChild(wrap);
+    groups.appendChild(row);
   }
 
   $("extra").addEventListener("input", render);
@@ -728,8 +869,24 @@ async function boot() {
   $("script").addEventListener("input", updateChars);
   applyPreset();
   updateChars();
+  updatePicked();
   refreshBalance();
   poll();
+}
+
+function pickedModels() {
+  return [...document.querySelectorAll("#models input:checked")].map(i => i.value);
+}
+
+function updatePicked() {
+  const n = pickedModels().length;
+  $("picked").textContent = n ? `已勾 ${n} 个模型，会建 ${n} 条任务` : "还没勾模型";
+  // 「坐/站」只在会重新生成身体的模型上有机会生效
+  const bodyAware = pickedModels().some(v => (CFG.body_aware || []).includes(v.split("|")[1]));
+  const sel = $("g-body");
+  if (sel && sel.value !== "keep" && !bodyAware) {
+    $("picked").textContent += "　注意：勾选的模型都不会重新生成身体，坐/站改不动";
+  }
 }
 
 function applyPreset() {
@@ -756,7 +913,7 @@ function currentBlocks() {
 function render() {
   if (MANUAL) return;
   const g = CFG.prompt.groups, b = currentBlocks();
-  const order = ["posture", "gesture", "expression", "speech", "negative"];
+  const order = ["body", "posture", "gesture", "expression", "speech", "negative"];
   const parts = [CFG.prompt.base];
   for (const group of order) {
     const opt = (g[group]?.options || []).find(o => o.key === b[group]);
@@ -765,6 +922,7 @@ function render() {
   const extra = $("extra").value.trim();
   if (extra) parts.push(extra);
   $("preview").textContent = parts.join(" ");
+  updatePicked();
 }
 
 function promptText() {
@@ -808,16 +966,17 @@ $("fit").addEventListener("click", () => {
 $("f").addEventListener("submit", async (e) => {
   e.preventDefault();
   $("err").textContent = "";
+  const picked = pickedModels();
+  if (!picked.length) { $("err").textContent = "至少勾一个模型"; return; }
+
   const form = new FormData($("f"));
-  const [provider, recipe] = $("model").value.split("|");
-  form.set("provider", provider);
-  form.set("recipe", recipe);
+  form.set("models", picked.join(","));
   form.set("prompt", promptText());
   form.set("preset", $("preset").value);
   form.set("blocks", JSON.stringify(currentBlocks()));
-  form.delete("model");
+  form.set("sequential", $("sequential").checked ? "1" : "0");
 
-  $("go").disabled = true; $("go").textContent = "提交中…";
+  $("go").disabled = true; $("go").textContent = `提交中…（${picked.length} 条）`;
   try {
     const resp = await fetch("/api/jobs", { method: "POST", body: form });
     const data = await resp.json();
@@ -835,9 +994,10 @@ async function refreshBalance() {
     const b = await (await fetch("/api/balance")).json();
     const bits = [];
     if (b.wavespeed !== undefined) bits.push(`WaveSpeed $${b.wavespeed}`);
-    if (b.wavespeed_error) bits.push("WaveSpeed 余额查询失败");
+    if (b.wavespeed_error) bits.push("WaveSpeed 未配置");
+    if (b.moark_package) bits.push(`国内资源包 ¥${b.moark_package.balance}`);
     if (b.moark && b.moark.available !== undefined)
-      bits.push(`国内通道并发 ${b.moark.available}/${b.moark.max_concurrency}`);
+      bits.push(`并发 ${b.moark.available}/${b.moark.max_concurrency}`);
     $("bal").textContent = bits.join("　") || "余额不可用";
   } catch { $("bal").textContent = "余额不可用"; }
 }
@@ -849,23 +1009,24 @@ function jobCard(j) {
     `<li class="${d.severity}">${d.dimension}/${d.code} ${d.detail}</li>`).join("");
   const counts = j.metrics && j.metrics.available
     ? `${j.metrics.major_count} 重 / ${j.metrics.minor_count} 轻` : "";
-  // 失败但拿到过服务端任务号 = 钱可能已经花了，结果还能捞回来
   const recoverable = j.status === "failed" && j.remote_task;
+  /* 不做内联播放：列表里几十条会被浏览器自动预取，带宽扛不住。要看就下载。 */
   return `<div class="job ${j.status}">
     <h3>${j.id}
       <span class="tag ${cls}">${j.status}</span>
       <span class="tag">${j.recipe}</span>
       <span class="tag">${j.seconds || "?"}s</span>
+      ${j.batch ? `<span class="tag batch">批次 ${j.batch}</span>` : ""}
       ${j.preset ? `<span class="tag">${j.preset}</span>` : ""}
       ${counts ? `<span class="tag">${counts}</span>` : ""}
     </h3>
     <div class="meta">${j.stage || ""}　${money}${j.elapsed ? "　耗时 " + j.elapsed + "s" : ""}</div>
-    ${j.video ? `<video controls preload="metadata" src="/media/${j.id}"></video>` : ""}
+    ${j.video ? `<a class="dl" href="/media/${j.id}" download>下载成片</a>` : ""}
     ${defects ? `<ul class="defect">${defects}</ul>` : ""}
     ${(j.warnings || []).map(w => `<p class="meta" style="color:#fc9">注意：${w}</p>`).join("")}
     ${j.error ? `<pre class="err">${j.error}</pre>` : ""}
     ${recoverable ? `<button class="ghost" onclick="reattach('${j.id}')">
-        重连取回（服务端任务 ${j.remote_task}）</button>` : ""}
+        重连取回（${j.remote_task}）</button>` : ""}
     ${j.status === "failed" ? `<button class="ghost" onclick="retry('${j.id}')">
         用同样的参数重试</button>` : ""}
     <details><summary class="meta">提示词</summary><div class="preview">${j.prompt || "(空)"}</div></details>
@@ -887,11 +1048,14 @@ async function reattach(id) {
 async function poll() {
   try {
     const jobs = await (await fetch("/api/jobs")).json();
-    $("list").innerHTML = jobs.length ? jobs.map(jobCard).join("")
-      : '<p class="meta">还没有任务。左边填好点生成。</p>';
-    if (jobs.some(j => j.status === "queued" || j.status === "running")) {
-      refreshBalance();
-    }
+    const running = jobs.filter(j => j.status === "queued" || j.status === "running").length;
+    $("jobhint").textContent = jobs.length
+      ? `共 ${jobs.length} 条，${running} 条在跑。同批次的任务参数完全一样，只有模型不同，可以直接对比。`
+      : "";
+    $("list").innerHTML = jobs.length
+      ? `<div class="grid">${jobs.map(jobCard).join("")}</div>`
+      : '<p class="meta">还没有任务。左边填好、勾上模型，点生成。</p>';
+    if (running) refreshBalance();
   } catch {}
   setTimeout(poll, 4000);
 }

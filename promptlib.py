@@ -91,6 +91,46 @@ EXPRESSION: tuple[Block, ...] = (
           "但不咧嘴大笑。"),
 )
 
+# --------------------------------------------------------------------------
+# 坐/站。运营常遇到「用户传了站姿照片但要坐着说」或者反过来。
+#
+# 先说清楚能做到什么程度：**单图直出类模型改不了全身姿态**。它们是从你给的那一帧
+# 往下animate，头和上半身能动，但站着的人不会因为一句提示词就坐下来。
+# 这组提示词只在会重新生成身体的模型上有效（SkyReels、OmniHuman、
+# skyreels-v3/talking-avatar 这些带 prompt 参数的），而且成功率不高。
+#
+# 真要换姿态，可靠做法是**先把照片改了再送进来**——用 photo-edit 组的提示词
+# 配 bytedance/seedream-v4/edit 之类的图像编辑模型（约 $0.027 一张），
+# 拿到坐姿照片再生成。见 BODY_MODE_WARNING。
+# --------------------------------------------------------------------------
+BODY_MODE_WARNING = (
+    "单图直出类模型改不了全身姿态：站着的人不会因为提示词就坐下。"
+    "这组只在带 prompt 参数、会重新生成身体的模型上有一定概率生效。"
+    "要稳定换姿态，请先用「改照片姿态」把参考图改成目标姿态。"
+)
+
+BODY: tuple[Block, ...] = (
+    Block("keep", "跟照片一致（推荐）",
+          "保持参考图中的姿态和取景，不改变人物是坐着还是站着。",
+          "默认。改姿态不可靠，能不改就不改"),
+    Block("to-sitting", "改成坐姿",
+          "人物坐在椅子上，上身端正，双肩放平，腰背自然挺直，"
+          "取景为坐姿的胸部以上半身景。",
+          "照片是站姿、需要坐着说时用。成功率取决于模型"),
+    Block("to-standing", "改成站姿",
+          "人物自然站立，双脚与肩同宽，重心平稳，上身端正，"
+          "取景为站姿的腰部以上半身景。",
+          "照片是坐姿、需要站着说时用"),
+    Block("sitting-desk", "坐在桌前",
+          "人物坐在桌子后方，双手可自然搭在桌面边缘，上身端正面向镜头，"
+          "取景为桌面以上的半身景。",
+          "访谈、播报台的调性"),
+    Block("sitting-sofa", "坐在沙发上",
+          "人物坐在沙发上，姿态放松但上身端正，肩线保持水平，"
+          "取景为胸部以上半身景。",
+          "轻松、口播带货的调性"),
+)
+
 POSTURE: tuple[Block, ...] = (
     Block("still", "躯干几乎不动",
           "躯干保持稳定，只有随呼吸的极小起伏，肩线保持水平，无左右摇晃、无前后移动。",
@@ -126,6 +166,7 @@ NEGATIVE: tuple[Block, ...] = (
 )
 
 GROUPS: dict[str, tuple[Block, ...]] = {
+    "body": BODY,
     "gesture": GESTURE,
     "expression": EXPRESSION,
     "posture": POSTURE,
@@ -134,6 +175,7 @@ GROUPS: dict[str, tuple[Block, ...]] = {
 }
 
 GROUP_LABELS = {
+    "body": "坐/站",
     "gesture": "手势",
     "expression": "表情",
     "posture": "体态",
@@ -141,47 +183,84 @@ GROUP_LABELS = {
     "negative": "禁止项",
 }
 
+GROUP_HINTS = {
+    "body": BODY_MODE_WARNING,
+}
+
+# 改照片姿态用的提示词。配图像编辑模型（约 $0.027 一张）先把参考图改成目标姿态，
+# 再拿改好的图去生成——比指望口播模型自己把人从站着变成坐着靠得住得多。
+PHOTO_EDITS: dict[str, dict] = {
+    "to-sitting": {
+        "label": "站姿照 → 坐姿",
+        "prompt": "把画面中的人物改为坐在椅子上，保持同一个人的长相、发型、"
+                  "穿着和光照完全不变，只改变姿态和取景。上身端正，双肩放平，"
+                  "正面朝向镜头，构图为胸部以上半身景，背景保持原样。",
+    },
+    "to-standing": {
+        "label": "坐姿照 → 站姿",
+        "prompt": "把画面中的人物改为自然站立，保持同一个人的长相、发型、"
+                  "穿着和光照完全不变，只改变姿态和取景。双脚与肩同宽，上身端正，"
+                  "正面朝向镜头，构图为腰部以上半身景，背景保持原样。",
+    },
+    "to-desk": {
+        "label": "改成坐在桌前",
+        "prompt": "把画面中的人物改为坐在桌子后方，双手自然搭在桌面上，"
+                  "保持同一个人的长相、发型、穿着不变，正面朝向镜头，"
+                  "构图为桌面以上的半身景。",
+    },
+    "close-mouth": {
+        "label": "把嘴改成闭合",
+        "prompt": "把画面中人物的嘴改为自然闭合状态，牙齿不外露，"
+                  "其余一切（长相、发型、穿着、姿态、背景、光照）保持完全不变。",
+    },
+    "frontal": {
+        "label": "转成正面平视",
+        "prompt": "把画面中的人物改为正面朝向镜头、眼睛平视镜头，"
+                  "保持同一个人的长相、发型、穿着和光照不变，构图为半身景。",
+    },
+}
+
 # 已经搭好的组合。名字对应它想验证的东西。
 PRESETS: dict[str, dict] = {
     "baseline": {
         "label": "基线（当前在用的）",
         "note": "摊手 + 亲和 + 小幅点头。作为对照，不要删",
-        "blocks": {"gesture": "open-palm", "expression": "warm",
+        "blocks": {"body": "keep", "gesture": "open-palm", "expression": "warm",
                    "posture": "micro-nod", "speech": "direct",
                    "negative": "standard"},
     },
     "still-hands": {
         "label": "手不动（最保险）",
         "note": "手交叠不动 + 躯干几乎不动。画面最稳，但可能偏僵",
-        "blocks": {"gesture": "clasped", "expression": "calm-pro",
+        "blocks": {"body": "keep", "gesture": "clasped", "expression": "calm-pro",
                    "posture": "still", "speech": "direct",
                    "negative": "plus-neck"},
     },
     "counting": {
         "label": "数点讲解",
         "note": "台词里有「第一第二第三」时用，手势和内容对得上",
-        "blocks": {"gesture": "counting", "expression": "earnest",
+        "blocks": {"body": "keep", "gesture": "counting", "expression": "earnest",
                    "posture": "micro-nod", "speech": "direct",
                    "negative": "plus-neck"},
     },
     "single-hand": {
         "label": "单手交替",
         "note": "比双手摊开自然，手也不容易糊",
-        "blocks": {"gesture": "alternating", "expression": "warm",
+        "blocks": {"body": "keep", "gesture": "alternating", "expression": "warm",
                    "posture": "micro-nod", "speech": "direct",
                    "negative": "plus-neck"},
     },
     "broadcast": {
         "label": "播报站姿",
         "note": "双手垂放，最接近真人播报，画面最干净",
-        "blocks": {"gesture": "down", "expression": "calm-pro",
+        "blocks": {"body": "keep", "gesture": "down", "expression": "calm-pro",
                    "posture": "still", "speech": "direct",
                    "negative": "plus-neck"},
     },
     "emphatic": {
         "label": "语气坚定",
         "note": "握拳下压强调 + 轻微前倾",
-        "blocks": {"gesture": "emphasis-fist", "expression": "earnest",
+        "blocks": {"body": "keep", "gesture": "emphasis-fist", "expression": "earnest",
                    "posture": "slight-lean", "speech": "direct",
                    "negative": "plus-neck"},
     },
@@ -202,11 +281,11 @@ def compose(blocks: dict[str, str] | None = None, *, base: str = BASE,
             extra: str = "") -> str:
     """把选中的积木拼成一段提示词。
 
-    顺序固定：机位硬约束 → 体态 → 手势 → 表情 → 开口方式 → 禁止项 → 自定义补充。
+    顺序固定：机位硬约束 → 坐站 → 体态 → 手势 → 表情 → 开口方式 → 禁止项 → 补充。
     固定顺序是为了让两次生成的差异只来自内容而不是语序。
     """
     parts = [base.strip()]
-    for group in ("posture", "gesture", "expression", "speech", "negative"):
+    for group in ("body", "posture", "gesture", "expression", "speech", "negative"):
         key = (blocks or {}).get(group)
         if not key:
             continue
@@ -231,12 +310,14 @@ def catalog() -> dict:
         "groups": {
             group: {
                 "label": GROUP_LABELS[group],
+                "hint": GROUP_HINTS.get(group, ""),
                 "options": [{"key": b.key, "label": b.label,
                              "text": b.text, "note": b.note}
                             for b in items],
             }
             for group, items in GROUPS.items()
         },
+        "photo_edits": {k: dict(v) for k, v in PHOTO_EDITS.items()},
         "presets": {
             name: {"label": spec["label"], "note": spec["note"],
                    "blocks": spec["blocks"], "text": compose(spec["blocks"])}

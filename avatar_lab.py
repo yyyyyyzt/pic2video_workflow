@@ -979,7 +979,10 @@ def main() -> int:
     p = sub.add_parser("plan", help="估算成本，不花钱")
     p.add_argument("--recipes", nargs="+", required=True)
     p.add_argument("--seconds", type=float, default=60)
-    p.add_argument("--upscale", default="up-bytedance")
+    p.add_argument("--upscale", default="up-bytedance",
+                   help="超分方案。传 none 或 --no-upscale 则不算超分")
+    p.add_argument("--no-upscale", dest="upscale", action="store_const", const="",
+                   help="不算超分成本")
     p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("balance", help="查 WaveSpeed 余额")

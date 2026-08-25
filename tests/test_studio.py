@@ -36,7 +36,7 @@ def _png() -> bytes:
 
 
 def _submit(client, **overrides):
-    data = {"provider": "wavespeed", "recipe": "skyreels-std",
+    data = {"models": "wavespeed|skyreels-std",
             "prompt": "p", "seconds": "10", "script": "一段台词"}
     data.update(overrides)
     files = {"image": ("f.png", _png(), "image/png")}
@@ -84,8 +84,8 @@ class TestJobStore:
 class TestConfigEndpoint:
     def test_exposes_everything_the_page_needs(self, client):
         data = client.get("/api/config").json()
-        assert set(data) == {"models", "prompt", "voices",
-                             "default_voice", "chars_per_second"}
+        assert set(data) == {"models", "prompt", "voices", "default_voice",
+                             "chars_per_second", "body_aware"}
         assert data["models"] and data["voices"]
 
     def test_model_entries_have_provider_and_recipe(self, client):
@@ -134,12 +134,13 @@ class TestConfigEndpoint:
 
 class TestValidation:
     def test_missing_image_returns_400_with_chinese(self, client):
-        r = client.post("/api/jobs", data={"recipe": "skyreels-std"})
+        r = client.post("/api/jobs", data={"models": "wavespeed|skyreels-std"})
         assert r.status_code == 400
         assert "角色图" in r.json()["error"]
 
     def test_missing_audio_and_script_returns_400(self, client):
-        r = client.post("/api/jobs", data={"recipe": "skyreels-std", "prompt": "p"},
+        r = client.post("/api/jobs",
+                        data={"models": "wavespeed|skyreels-std", "prompt": "p"},
                         files={"image": ("f.png", _png(), "image/png")})
         assert r.status_code == 400
         assert "台词" in r.json()["error"]
@@ -149,7 +150,8 @@ class TestValidation:
 
     def test_audio_only_is_accepted(self, client):
         r = client.post("/api/jobs",
-                        data={"recipe": "skyreels-std", "prompt": "p", "script": ""},
+                        data={"models": "wavespeed|skyreels-std", "prompt": "p",
+                              "script": ""},
                         files={"image": ("f.png", _png(), "image/png"),
                                "audio": ("a.mp3", b"ID3fake", "audio/mpeg")})
         assert r.status_code == 200
@@ -314,3 +316,119 @@ def test_page_calls_every_endpoint_it_needs():
     """页面里写死的路径必须和后端路由对得上，写错了运营只会看到一片空白。"""
     for path in ("/api/config", "/api/jobs", "/api/balance", "/media/"):
         assert path in studio.PAGE
+
+
+class TestMultiModel:
+    """一次勾多个模型 → 建多条任务，素材共用，参数完全一致才能横向比。"""
+
+    def test_creates_one_job_per_model(self, client):
+        r = _submit(client, models="wavespeed|skyreels-std,wavespeed|pruna-avatar,"
+                                   "wavespeed|soulx-flashhead")
+        assert r.status_code == 200
+        assert len(r.json()["ids"]) == 3
+
+    def test_jobs_share_one_batch_id(self, client):
+        ids = _submit(client, models="wavespeed|skyreels-std,"
+                                     "wavespeed|pruna-avatar").json()["ids"]
+        batches = {studio.STORE.get(i).batch for i in ids}
+        assert len(batches) == 1 and batches != {""}
+
+    def test_single_model_has_no_batch_id(self, client):
+        """只勾一个就不该显示批次标签。"""
+        job_id = _submit(client).json()["id"]
+        assert studio.STORE.get(job_id).batch == ""
+
+    def test_uploads_are_shared_not_duplicated(self, client):
+        ids = _submit(client, models="wavespeed|skyreels-std,"
+                                     "wavespeed|pruna-avatar").json()["ids"]
+        images = {studio.STORE.get(i).image for i in ids}
+        assert len(images) == 1, "同批任务必须用同一份素材，否则不可比"
+
+    def test_prompt_and_blocks_identical_across_batch(self, client):
+        blocks = json.dumps({"body": "to-sitting", "gesture": "clasped"})
+        ids = _submit(client, models="wavespeed|skyreels-std,wavespeed|pruna-avatar",
+                      prompt="同一句", blocks=blocks).json()["ids"]
+        jobs = [studio.STORE.get(i) for i in ids]
+        assert len({j.prompt for j in jobs}) == 1
+        assert len({json.dumps(j.blocks, sort_keys=True) for j in jobs}) == 1
+
+    def test_batch_index_is_ordered(self, client):
+        ids = _submit(client, models="wavespeed|a,wavespeed|b,wavespeed|c").json()["ids"]
+        assert [studio.STORE.get(i).batch_index for i in ids] == [0, 1, 2]
+
+    def test_recipe_order_preserved(self, client):
+        ids = _submit(client, models="wavespeed|pruna-avatar,"
+                                     "wavespeed|skyreels-std").json()["ids"]
+        assert [studio.STORE.get(i).recipe for i in ids] == \
+            ["pruna-avatar", "skyreels-std"]
+
+    def test_no_models_selected_is_400(self, client):
+        r = client.post("/api/jobs", data={"models": ""},
+                        files={"image": ("f.png", _png(), "image/png")})
+        assert r.status_code == 400
+        assert "模型" in r.json()["error"]
+
+    def test_bare_recipe_defaults_to_wavespeed(self, client):
+        job_id = _submit(client, models="skyreels-std").json()["id"]
+        assert studio.STORE.get(job_id).provider == "wavespeed"
+
+    def test_legacy_provider_recipe_fields_still_work(self, client):
+        r = client.post("/api/jobs",
+                        data={"provider": "wavespeed", "recipe": "skyreels-std",
+                              "script": "台词"},
+                        files={"image": ("f.png", _png(), "image/png")})
+        assert r.status_code == 200
+
+    def test_sequential_marks_queue_positions(self, client, monkeypatch):
+        """串行时要让人看出还有几条在排队，否则像卡住了。"""
+        monkeypatch.setattr(studio, "_run_job", lambda job_id: None)
+        ids = _submit(client, models="wavespeed|a,wavespeed|b,wavespeed|c",
+                      sequential="1").json()["ids"]
+        studio._run_batch(ids)
+        assert "3" in studio.STORE.get(ids[2]).stage
+
+
+class TestDownloadInsteadOfPreview:
+    def test_page_has_no_inline_video(self):
+        """任务列表内联 <video> 会让浏览器自动预取每一条，带宽扛不住。"""
+        assert "<video" not in studio.PAGE
+
+    def test_page_offers_download_link(self):
+        assert 'class="dl"' in studio.PAGE and "下载成片" in studio.PAGE
+
+    def test_media_sets_attachment_filename(self, client, tmp_path):
+        job_id = _submit(client).json()["id"]
+        video = tmp_path / "v.mp4"
+        video.write_bytes(b"\x00" * 64)
+        studio.STORE.update(job_id, video=str(video))
+        r = client.get(f"/media/{job_id}")
+        assert r.status_code == 200
+        assert "attachment" in r.headers.get("content-disposition", "")
+
+
+class TestTwoColumnLayout:
+    def test_uses_label_control_grid(self):
+        """每行「标签在左、控件在右」。断言结构而不是具体像素，免得调宽度就红。"""
+        import re
+
+        assert ".field { display:grid;" in studio.PAGE
+        assert re.search(r"\.field \{ display:grid; grid-template-columns:\d+px 1fr",
+                         studio.PAGE)
+
+    def test_collapses_on_narrow_screens(self):
+        assert "@media (max-width:620px)" in studio.PAGE
+
+    def test_form_column_is_capped(self):
+        """表单封顶，多余宽度给任务列表——不封顶下拉框会被拉到 700px。"""
+        assert "minmax(380px,540px)" in studio.PAGE
+
+
+class TestBodyModeHint:
+    def test_config_lists_body_aware_recipes(self, client):
+        aware = client.get("/api/config").json()["body_aware"]
+        assert "skyreels-std" in aware
+        # 纯口型替换类不会重新生成身体
+        assert "lipsync-2-pro" not in aware
+
+    def test_page_warns_when_model_cannot_change_posture(self):
+        assert "坐/站改不动" in studio.PAGE
