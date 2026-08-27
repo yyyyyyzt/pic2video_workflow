@@ -126,6 +126,14 @@ class TestSubmitQuery:
         assert "in_progress" in tencentclient.STATUS_WAIT
         assert "completed" in tencentclient.STATUS_OK
 
+    def test_query_flattens_dict_error_message(self, monkeypatch):
+        monkeypatch.setattr(tencentclient, "_request", lambda *a, **k: {
+            "status": "failed",
+            "error_message": {"message": "任务不存在。", "code": "JobNotExist"},
+        })
+        out = tencentclient.query("yt-video-humanactor", "jid")
+        assert out["error_message"] == "任务不存在。"
+
     def test_poll_waits_then_done(self, monkeypatch):
         ticks = iter([
             {"status": "WAIT", "url": None, "error_code": "", "error_message": ""},

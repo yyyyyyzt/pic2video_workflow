@@ -100,6 +100,15 @@ def _unwrap(data: dict) -> dict:
     return data
 
 
+def _as_text(value) -> str:
+    if isinstance(value, dict):
+        inner = value.get("message") or value.get("msg") or value.get("Message")
+        return str(inner) if inner else ""
+    if value in (None, ""):
+        return ""
+    return str(value)
+
+
 def _pick(data: dict, *keys: str):
     for key in keys:
         value = data.get(key)
@@ -246,9 +255,9 @@ def query(model: str, job_id: str) -> dict:
         "status": status,
         "url": _pick(data, "result_video_url", "ResultVideoUrl",
                      "video_url", "url", "output"),
-        "error_code": _pick(data, "error_code", "ErrorCode") or "",
-        "error_message": _pick(data, "error_message", "ErrorMessage",
-                               "message", "error") or "",
+        "error_code": _as_text(_pick(data, "error_code", "ErrorCode")),
+        "error_message": _as_text(_pick(data, "error_message", "ErrorMessage",
+                                       "message", "error")),
         "raw": data,
     }
 
