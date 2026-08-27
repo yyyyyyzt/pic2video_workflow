@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import threading
 import time
@@ -142,6 +143,33 @@ class Job:
     batch_index: int = 0
 
 
+def json_safe(obj):
+    """把 NaN / Inf 换成 None，让标准 JSON 能编过去。
+
+    评测在检不到脸时会写出 ``face_px_median: nan``。Python 的 json 默认允许
+    NaN，所以 jobs.json 能落盘；Starlette 的 JSONResponse 开了 allow_nan=False，
+    列表接口就会整页 500。已落盘的脏任务也得能列出来，所以序列化前一律清洗。
+    """
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, bool) or obj is None:
+        return obj
+    if isinstance(obj, int):
+        return obj
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    # numpy 标量（np.float64('nan') 不是 Python float）
+    item = getattr(obj, "item", None)
+    if callable(item):
+        try:
+            return json_safe(item())
+        except (ValueError, TypeError, OverflowError):
+            return obj
+    return obj
+
+
 class JobStore:
     """任务列表落盘。运营会关浏览器、服务会重启，结果不能只存在内存里。"""
 
@@ -168,7 +196,8 @@ class JobStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         ordered = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
         self.path.write_text(
-            json.dumps([asdict(j) for j in ordered], ensure_ascii=False, indent=2),
+            json.dumps(json_safe([asdict(j) for j in ordered]),
+                       ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8")
 
     def add(self, job: Job) -> Job:
@@ -541,14 +570,14 @@ def create_app():
 
     @app.get("/api/jobs")
     def list_jobs() -> JSONResponse:
-        return JSONResponse([asdict(j) for j in STORE.list()])
+        return JSONResponse(json_safe([asdict(j) for j in STORE.list()]))
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str) -> JSONResponse:
         job = STORE.get(job_id)
         if job is None:
             return JSONResponse({"error": "not found"}, status_code=404)
-        return JSONResponse(asdict(job))
+        return JSONResponse(json_safe(asdict(job)))
 
     @app.post("/api/jobs/{job_id}/retry")
     def retry(job_id: str) -> JSONResponse:
@@ -631,20 +660,37 @@ PAGE = r"""<!DOCTYPE html>
 <style>
   :root { --bg:#111; --card:#1b1b1b; --line:#333; --fg:#eee; --dim:#9a9a9a; --ok:#2d5; }
   * { box-sizing: border-box; }
+  html, body { min-height:100%; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
-  header { padding:14px 24px; border-bottom:1px solid var(--line);
-           display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+  header { padding:10px 24px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:20px; flex-wrap:wrap; }
   h1 { font-size:18px; margin:0; }
-  .bal { color:var(--dim); font-size:13px; }
-  /* 表单封顶，多余的宽度全给任务列表：表单只填一次，任务列表要一直看，
-     而且卡片里文字多。不封顶的话下拉框会被拉到 700px 宽，很浪费。 */
-  main { display:grid; grid-template-columns:minmax(380px,540px) minmax(360px,1fr);
-         gap:0; align-items:start; }
-  @media (max-width:1000px){ main{ grid-template-columns:1fr; }
-                             .panel{ border-right:0; border-bottom:1px solid var(--line); } }
-  .panel { padding:18px 20px; border-right:1px solid var(--line); }
-  .jobs  { padding:18px 24px; }
+  .bal { color:var(--dim); font-size:13px; margin-left:auto; }
+  nav { display:flex; gap:4px; }
+  .tab { width:auto; background:transparent; color:var(--dim); border:0;
+         border-bottom:2px solid transparent; border-radius:0; padding:10px 16px;
+         font:600 14px/1 inherit; cursor:pointer; }
+  .tab:hover { color:var(--fg); }
+  .tab.on { color:var(--fg); border-bottom-color:var(--ok); }
+  .tab .badge { display:inline-block; min-width:1.2em; margin-left:6px;
+                background:#333; color:var(--fg); font-size:11px; font-weight:600;
+                padding:1px 6px; border-radius:999px; }
+  .tab .badge:empty { display:none; }
+  .tab .badge.on { background:#164; color:#cfe; }
+
+  /* 配置 / 任务拆成两个整页。配置页两列加宽，模型整行铺开，一屏填完。 */
+  .page { min-height:calc(100vh - 52px); padding:16px 24px 20px; }
+  .page[hidden] { display:none !important; }
+
+  .form-grid { display:grid; grid-template-columns:1fr 1fr;
+               gap:14px 20px; align-items:stretch; }
+  .form-grid > .col { display:flex; flex-direction:column; gap:14px; min-width:0; }
+  .form-grid > fieldset, .form-grid .col > fieldset { margin:0; min-width:0;
+               display:flex; flex-direction:column; }
+  .form-grid .col-models, .form-grid .col-actions { grid-column:1 / -1; }
+  @media (max-width:900px){ .form-grid{ grid-template-columns:1fr; } }
+
   .jobs .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr));
                 gap:12px; }
 
@@ -667,8 +713,9 @@ PAGE = r"""<!DOCTYPE html>
   .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 
   button { background:var(--ok); color:#052; border:0; border-radius:8px;
-           padding:11px 18px; font:600 15px/1 inherit; cursor:pointer; width:100%; }
+           padding:11px 18px; font:600 15px/1 inherit; cursor:pointer; }
   button:disabled { background:#444; color:#999; cursor:not-allowed; }
+  button.primary { min-width:180px; padding:11px 28px; }
   button.ghost { background:#242424; color:var(--fg); border:1px solid var(--line);
                  font-weight:400; font-size:13px; padding:7px 12px; width:auto; }
   a.dl { display:inline-block; background:#164; color:#cfe; text-decoration:none;
@@ -677,18 +724,23 @@ PAGE = r"""<!DOCTYPE html>
 
   .preview { background:#0e0e0e; border:1px dashed var(--line); border-radius:8px;
              padding:10px; font-size:12.5px; color:#cfc; white-space:pre-wrap;
-             max-height:150px; overflow:auto; }
-  .models { max-height:280px; overflow:auto; border:1px solid var(--line);
-            border-radius:8px; padding:6px; }
-  .models .grp { color:var(--dim); font-size:12px; margin:6px 4px 3px; }
+             max-height:120px; overflow:auto; }
+  .models { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+            gap:2px 8px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .models .grp { grid-column:1 / -1; color:var(--dim); font-size:12px; margin:6px 4px 3px; }
   .models label { display:flex; gap:8px; align-items:flex-start; padding:5px 6px;
                   border-radius:6px; cursor:pointer; font-size:13px; color:var(--fg); }
   .models label:hover { background:#222; }
   .models input { margin-top:3px; flex:0 0 auto; }
   .picked { color:var(--ok); font-size:12px; margin:6px 0 0; }
 
+  .actions { display:flex; gap:16px; align-items:center; flex-wrap:wrap;
+             position:sticky; bottom:0; background:var(--bg);
+             padding:12px 0 4px; border-top:1px solid var(--line); }
+  .actions .note { margin:0; }
+
   .job { background:var(--card); border:1px solid var(--line); border-radius:10px;
-         padding:12px; margin-bottom:12px; }
+         padding:12px; margin-bottom:0; }
   .job.failed { border-color:#833; }
   .job h3 { margin:0 0 6px; font-size:14px; display:flex; gap:6px;
             align-items:center; flex-wrap:wrap; }
@@ -709,12 +761,18 @@ PAGE = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>数字人提示词调试台</h1>
+  <nav>
+    <button type="button" class="tab on" id="tab-config" data-page="config">配置</button>
+    <button type="button" class="tab" id="tab-jobs" data-page="jobs">
+      任务 <span class="badge" id="jobcount"></span>
+    </button>
+  </nav>
   <span class="bal" id="bal">余额查询中…</span>
 </header>
 
-<main>
-<section class="panel">
-  <form id="f">
+<section class="page panel" id="page-config">
+  <form id="f" class="form-grid">
+    <div class="col">
     <fieldset>
       <legend>1 · 素材</legend>
       <div class="field">
@@ -759,6 +817,7 @@ PAGE = r"""<!DOCTYPE html>
         </div>
       </div>
     </fieldset>
+    </div>
 
     <fieldset>
       <legend>3 · 提示词</legend>
@@ -782,7 +841,7 @@ PAGE = r"""<!DOCTYPE html>
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset class="col-models">
       <legend>4 · 模型（可多选）</legend>
       <div class="field stack">
         <div class="models" id="models"></div>
@@ -794,23 +853,40 @@ PAGE = r"""<!DOCTYPE html>
       </div>
     </fieldset>
 
-    <button type="submit" id="go">生成</button>
-    <p class="note" id="err" style="color:#f99"></p>
+    <div class="col-actions actions">
+      <button type="submit" class="primary" id="go">生成</button>
+      <p class="note" id="err" style="color:#f99"></p>
+    </div>
   </form>
 </section>
 
-<section class="jobs">
+<section class="page jobs" id="page-jobs" hidden>
   <p class="meta" id="jobhint"></p>
   <div id="list"></div>
 </section>
-</main>
 
 <script>
 let CFG = null, MANUAL = false;
 const $ = (id) => document.getElementById(id);
 
+function setPage(name) {
+  name = name === "jobs" ? "jobs" : "config";
+  $("page-config").hidden = name !== "config";
+  $("page-jobs").hidden = name !== "jobs";
+  $("tab-config").classList.toggle("on", name === "config");
+  $("tab-jobs").classList.toggle("on", name === "jobs");
+  const hash = "#" + name;
+  if (location.hash !== hash) history.replaceState(null, "", hash);
+}
+
 async function boot() {
   CFG = await (await fetch("/api/config")).json();
+
+  document.querySelectorAll("nav .tab").forEach(btn => {
+    btn.addEventListener("click", () => setPage(btn.dataset.page));
+  });
+  window.addEventListener("hashchange", () => setPage(location.hash.slice(1)));
+  setPage(location.hash.slice(1) || "config");
 
   const voice = $("voice");
   for (const v of CFG.voices) {
@@ -992,6 +1068,7 @@ $("f").addEventListener("submit", async (e) => {
     const resp = await fetch("/api/jobs", { method: "POST", body: form });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || "提交失败");
+    setPage("jobs");
     poll();
   } catch (ex) {
     $("err").textContent = ex.message;
@@ -1060,12 +1137,15 @@ async function poll() {
   try {
     const jobs = await (await fetch("/api/jobs")).json();
     const running = jobs.filter(j => j.status === "queued" || j.status === "running").length;
+    const badge = $("jobcount");
+    badge.textContent = jobs.length ? String(jobs.length) : "";
+    badge.classList.toggle("on", running > 0);
     $("jobhint").textContent = jobs.length
       ? `共 ${jobs.length} 条，${running} 条在跑。同批次的任务参数完全一样，只有模型不同，可以直接对比。`
       : "";
     $("list").innerHTML = jobs.length
       ? `<div class="grid">${jobs.map(jobCard).join("")}</div>`
-      : '<p class="meta">还没有任务。左边填好、勾上模型，点生成。</p>';
+      : '<p class="meta">还没有任务。到「配置」页填好、勾上模型，点生成。</p>';
     if (running) refreshBalance();
   } catch {}
   setTimeout(poll, 4000);

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -18,7 +20,7 @@ from videometrics.identity import cosine_similarity, drift_slope
 from videometrics.lipsync import (align_lag, detect_silence_head, lipsync_metrics,
                                   onset_index)
 from videometrics.plausibility import longest_false_run, outlier_fraction
-from videometrics.report import THRESHOLDS, _collect_defects
+from videometrics.report import THRESHOLDS, Evaluation, _collect_defects
 from videometrics.stability import find_freezes, find_spikes, jitter
 
 
@@ -407,6 +409,19 @@ class TestCollectDefects:
         assert t["lag_ms_minor"] < t["lag_ms_major"]
         assert t["identity_drift_minor"] < t["identity_drift_major"]
         assert t["detect_rate_major"] < t["detect_rate_minor"]
+
+    def test_to_dict_replaces_nan_with_null(self):
+        """无人脸时 median 是 nan。to_dict 必须换成 None，否则调试台
+        JSONResponse(allow_nan=False) 会把 /api/jobs 打挂。"""
+        ev = Evaluation(
+            available=True,
+            metrics={"合理性": {"face_px_median": float("nan"),
+                                "face_detect_rate": 0.0}},
+        )
+        payload = ev.to_dict()
+        json.dumps(payload, allow_nan=False)          # 就是线上那次 500 的编码器
+        assert payload["metrics"]["合理性"]["face_px_median"] is None
+        assert payload["metrics"]["合理性"]["face_detect_rate"] == 0.0
 
 
 # ---------------------------------------------------------------------------

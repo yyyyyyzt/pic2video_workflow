@@ -80,6 +80,31 @@ class TestJobStore:
     def test_update_unknown_id_is_noop(self, tmp_path):
         JobStore(tmp_path / "jobs.json").update("nope", status="done")
 
+    def test_nan_metrics_flush_as_null(self, tmp_path):
+        """检不到脸时 face_px_median 是 nan。落盘必须写成 null，否则下次
+        再读没问题，但 /api/jobs 用 Starlette JSONResponse 会 500。"""
+        path = tmp_path / "jobs.json"
+        store = JobStore(path)
+        store.add(Job(id="a", created_at="t", provider="w", recipe="r",
+                      prompt="", seconds=1,
+                      metrics={"合理性": {"face_px_median": float("nan")}}))
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw[0]["metrics"]["合理性"]["face_px_median"] is None
+
+    def test_legacy_nan_on_disk_is_rewritten_null(self, tmp_path):
+        """线上 jobs.json 已经用 Python json 写出过 NaN。下次落盘要洗成 null。"""
+        path = tmp_path / "jobs.json"
+        path.write_text(json.dumps([{
+            "id": "a", "created_at": "t", "provider": "w", "recipe": "r",
+            "prompt": "", "seconds": 1,
+            "metrics": {"合理性": {"face_px_median": float("nan")}},
+        }]), encoding="utf-8")
+        store = JobStore(path)
+        store.update("a", status="done")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw[0]["metrics"]["合理性"]["face_px_median"] is None
+        assert raw[0]["status"] == "done"
+
 
 class TestConfigEndpoint:
     def test_exposes_everything_the_page_needs(self, client):
@@ -184,6 +209,23 @@ class TestJobLifecycle:
 
     def test_unknown_job_404(self, client):
         assert client.get("/api/jobs/nope").status_code == 404
+
+    def test_nan_metrics_do_not_break_job_list(self, client):
+        """复现：pruna-avatar 全程检不到脸，face_px_median 是 nan，
+        GET /api/jobs 整页 500。已落盘的脏任务也必须能列出来。"""
+        job_id = _submit(client).json()["id"]
+        studio.STORE.update(job_id, metrics={
+            "available": True,
+            "metrics": {"合理性": {"face_px_median": float("nan"),
+                                   "face_detect_rate": 0.0}},
+        })
+        r = client.get("/api/jobs")
+        assert r.status_code == 200
+        job = next(j for j in r.json() if j["id"] == job_id)
+        assert job["metrics"]["metrics"]["合理性"]["face_px_median"] is None
+        detail = client.get(f"/api/jobs/{job_id}")
+        assert detail.status_code == 200
+        assert detail.json()["metrics"]["metrics"]["合理性"]["face_px_median"] is None
 
     def test_media_not_ready_404(self, client):
         job_id = _submit(client).json()["id"]
@@ -440,7 +482,7 @@ class TestDownloadInsteadOfPreview:
         assert "attachment" in r.headers.get("content-disposition", "")
 
 
-class TestTwoColumnLayout:
+class TestTabLayout:
     def test_uses_label_control_grid(self):
         """每行「标签在左、控件在右」。断言结构而不是具体像素，免得调宽度就红。"""
         import re
@@ -452,9 +494,18 @@ class TestTwoColumnLayout:
     def test_collapses_on_narrow_screens(self):
         assert "@media (max-width:620px)" in studio.PAGE
 
-    def test_form_column_is_capped(self):
-        """表单封顶，多余宽度给任务列表——不封顶下拉框会被拉到 700px。"""
-        assert "minmax(380px,540px)" in studio.PAGE
+    def test_config_and_jobs_are_separate_pages(self):
+        """配置和任务拆开，不再并排把表单挤到 540px。"""
+        assert 'id="page-config"' in studio.PAGE
+        assert 'id="page-jobs"' in studio.PAGE
+        assert 'id="tab-config"' in studio.PAGE
+        assert 'id="tab-jobs"' in studio.PAGE
+        assert "minmax(380px,540px)" not in studio.PAGE
+
+    def test_config_form_uses_full_width_columns(self):
+        assert ".form-grid" in studio.PAGE
+        assert "setPage" in studio.PAGE
+        assert 'data-page="jobs"' in studio.PAGE
 
 
 class TestBodyModeHint:

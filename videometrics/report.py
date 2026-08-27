@@ -112,7 +112,7 @@ class Evaluation:
         return sum(1 for d in self.defects if d.severity == "info")
 
     def to_dict(self) -> dict:
-        return {
+        return _json_safe({
             "available": self.available,
             "note": self.note,
             "major_count": self.major_count,
@@ -121,7 +121,7 @@ class Evaluation:
             "metrics": self.metrics,
             "defects": [d.to_dict() for d in self.defects],
             "segments": self.segments,
-        }
+        })
 
     def render(self) -> str:
         if not self.available:
@@ -337,7 +337,9 @@ def evaluate(video, *, silence_seconds: float = 0.0,
     measured_silence = lip.get("silence_measured_s") or 0.0
 
     plaus = plausibility_metrics(track)
-    plaus["face_px_median"] = round(track.median_face_px, 1)
+    # 检不到脸时 median 是 nan；JSON 不允许 NaN，调试台 /api/jobs 会整页 500。
+    px = track.median_face_px
+    plaus["face_px_median"] = round(float(px), 1) if np.isfinite(px) else None
     plaus["detail_metrics_reliable"] = bool(
         not np.isfinite(track.median_face_px)
         or track.median_face_px >= FACE_PX_DETAIL_FLOOR)
@@ -361,6 +363,26 @@ def evaluate(video, *, silence_seconds: float = 0.0,
 
 def evaluate_to_dict(video, **kwargs) -> dict:
     return evaluate(video, **kwargs).to_dict()
+
+
+def _json_safe(obj):
+    """评测向量里的 nan/inf 换成 None，避免写入 jobs.json / record.json 后
+    标准 JSON 编码器崩掉。"""
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, (bool, type(None), str, int)):
+        return obj
+    if isinstance(obj, float):
+        return obj if np.isfinite(obj) else None
+    item = getattr(obj, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except (ValueError, TypeError, OverflowError):
+            return obj
+    return obj
 
 
 def _reference_embedding(image):
