@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import threading
 import time
@@ -142,6 +143,33 @@ class Job:
     batch_index: int = 0
 
 
+def json_safe(obj):
+    """把 NaN / Inf 换成 None，让标准 JSON 能编过去。
+
+    评测在检不到脸时会写出 ``face_px_median: nan``。Python 的 json 默认允许
+    NaN，所以 jobs.json 能落盘；Starlette 的 JSONResponse 开了 allow_nan=False，
+    列表接口就会整页 500。已落盘的脏任务也得能列出来，所以序列化前一律清洗。
+    """
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, bool) or obj is None:
+        return obj
+    if isinstance(obj, int):
+        return obj
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    # numpy 标量（np.float64('nan') 不是 Python float）
+    item = getattr(obj, "item", None)
+    if callable(item):
+        try:
+            return json_safe(item())
+        except (ValueError, TypeError, OverflowError):
+            return obj
+    return obj
+
+
 class JobStore:
     """任务列表落盘。运营会关浏览器、服务会重启，结果不能只存在内存里。"""
 
@@ -168,7 +196,8 @@ class JobStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         ordered = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
         self.path.write_text(
-            json.dumps([asdict(j) for j in ordered], ensure_ascii=False, indent=2),
+            json.dumps(json_safe([asdict(j) for j in ordered]),
+                       ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8")
 
     def add(self, job: Job) -> Job:
@@ -541,14 +570,14 @@ def create_app():
 
     @app.get("/api/jobs")
     def list_jobs() -> JSONResponse:
-        return JSONResponse([asdict(j) for j in STORE.list()])
+        return JSONResponse(json_safe([asdict(j) for j in STORE.list()]))
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str) -> JSONResponse:
         job = STORE.get(job_id)
         if job is None:
             return JSONResponse({"error": "not found"}, status_code=404)
-        return JSONResponse(asdict(job))
+        return JSONResponse(json_safe(asdict(job)))
 
     @app.post("/api/jobs/{job_id}/retry")
     def retry(job_id: str) -> JSONResponse:
