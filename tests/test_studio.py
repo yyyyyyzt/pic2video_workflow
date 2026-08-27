@@ -482,7 +482,7 @@ class TestDownloadInsteadOfPreview:
         assert "attachment" in r.headers.get("content-disposition", "")
 
 
-class TestTwoColumnLayout:
+class TestTabLayout:
     def test_uses_label_control_grid(self):
         """每行「标签在左、控件在右」。断言结构而不是具体像素，免得调宽度就红。"""
         import re
@@ -494,9 +494,18 @@ class TestTwoColumnLayout:
     def test_collapses_on_narrow_screens(self):
         assert "@media (max-width:620px)" in studio.PAGE
 
-    def test_form_column_is_capped(self):
-        """表单封顶，多余宽度给任务列表——不封顶下拉框会被拉到 700px。"""
-        assert "minmax(380px,540px)" in studio.PAGE
+    def test_config_and_jobs_are_separate_pages(self):
+        """配置和任务拆开，不再并排把表单挤到 540px。"""
+        assert 'id="page-config"' in studio.PAGE
+        assert 'id="page-jobs"' in studio.PAGE
+        assert 'id="tab-config"' in studio.PAGE
+        assert 'id="tab-jobs"' in studio.PAGE
+        assert "minmax(380px,540px)" not in studio.PAGE
+
+    def test_config_form_uses_full_width_columns(self):
+        assert ".form-grid" in studio.PAGE
+        assert "setPage" in studio.PAGE
+        assert 'data-page="jobs"' in studio.PAGE
 
 
 class TestBodyModeHint:
