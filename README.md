@@ -134,7 +134,8 @@ python3 studio.py            # 打开 http://127.0.0.1:8000
 | :-- | :-- |
 | `studio.py` | 提示词调试台（网页，给运营） |
 | `promptlib.py` | 提示词积木与预设 |
-| `moarkclient.py` | 模力方舟（Gitee AI）国内通道 |
+| `tencentclient.py` | 腾讯云 TokenHub（调试台国内通道） |
+| `moarkclient.py` | 模力方舟（Gitee AI，调试台已下架） |
 | `avatar_lab.py` | CLI 入口：参数解析 + 调度 |
 | `docs/PROVIDERS.md` | 供应商与模型调研（含 MuseTalk 能不能用 API） |
 | `docs/MOARK.md` | 国内通道实测记录 |
@@ -157,7 +158,7 @@ apt install libegl1 libgles2  # Linux 上 mediapipe 需要，否则客观指标�
 
 cp .env.example .env
 # 填 WAVESPEED_API_KEY=wsk_live_xxxx（海外，模型最全）
-# 国内通道另填 MOARK_API_KEY（模力方舟，有 InfiniteTalk 和 Duix-Avatar）
+# 国内通道填 TOKENHUB_API_KEY（腾讯云 TokenHub，人像驱动 yt-video-humanactor）
 
 python3 avatar_lab.py balance      # 确认 key 通了
 ```
@@ -370,18 +371,14 @@ python3 stabilize.py data/lab/final60s/*/03_final.mp4 --method analyze
 `analyze` 如果报出明显的孤立尖峰，用现有的 `stabilize.py --method track` 修一遍再交。
 平台要求全程无剪辑，所以只能做整帧补偿，不能裁掉帧。
 
-## 国内通道（模力方舟）
+## 国内通道（腾讯云 TokenHub）
 
-节点在国内，同时有 InfiniteTalk 和 Duix-Avatar，适合对海外网络或合规有顾虑的场景：
+调试台国内选项走腾讯云 TokenHub 人像驱动（`yt-video-humanactor` / 1080p）。
+在 `.env` 填 `TOKENHUB_API_KEY`。音频只要公网 URL：本地文件会借 WaveSpeed 的
+上传接口中转，所以国内任务也需要能用的 `WAVESPEED_API_KEY`，或者自己先把
+音频放到可访问的地址。
 
-```bash
-python3 moarkclient.py models --filter avatar    # 免鉴权，先看有什么
-python3 moarkclient.py probe InfiniteTalk --image <url> --audio <url>
-```
-
-需要说明的是，模力方舟这两个模型的确切入参、时长上限和单价，官网未登录抓不到
-（模型列表是前端动态加载的），必须登录控制台在模型体验页看「API」示例。
-`probe` 子命令的作用就是拿真实报错反推字段名，据此校准 `moarkclient.py` 里的 payload。
+模力方舟问题太多，调试台下拉里已经拿掉。旧任务 `provider=moark` 仍能重连/重试。
 
 ## 命令速查
 

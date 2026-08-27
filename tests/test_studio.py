@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -105,6 +106,23 @@ class TestJobStore:
         assert raw[0]["metrics"]["合理性"]["face_px_median"] is None
         assert raw[0]["status"] == "done"
 
+    def test_delete_removes_job_and_output_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(studio, "OUTPUT_DIR", tmp_path / "outputs")
+        path = tmp_path / "jobs.json"
+        out = tmp_path / "outputs" / "a"
+        out.mkdir(parents=True)
+        (out / "result.mp4").write_bytes(b"x")
+        store = JobStore(path)
+        store.add(Job(id="a", created_at="t", provider="w", recipe="r",
+                      prompt="", seconds=1, video=str(out / "result.mp4")))
+        assert store.delete("a") is not None
+        assert store.get("a") is None
+        assert JobStore(path).get("a") is None
+        assert not out.exists()
+
+    def test_delete_unknown_is_none(self, tmp_path):
+        assert JobStore(tmp_path / "jobs.json").delete("nope") is None
+
 
 class TestConfigEndpoint:
     def test_exposes_everything_the_page_needs(self, client):
@@ -115,7 +133,7 @@ class TestConfigEndpoint:
 
     def test_model_entries_have_provider_and_recipe(self, client):
         for m in client.get("/api/config").json()["models"]:
-            assert m["provider"] in ("wavespeed", "moark")
+            assert m["provider"] in ("wavespeed", "tencent")
             assert m["recipe"] and m["label"]
 
     def test_wavespeed_entries_reference_real_recipes(self, client):
@@ -125,36 +143,29 @@ class TestConfigEndpoint:
             if m["provider"] == "wavespeed":
                 assert m["recipe"] in RECIPES, f"{m['recipe']} 不存在"
 
-    def test_moark_entries_come_from_catalog(self, monkeypatch):
-        """国内那半是查平台清单来的，不再手写端点——手写过一次就猜错了。"""
-        import moarkclient
+    def test_tencent_entries_are_listed(self, client):
+        recipes = {m["recipe"] for m in client.get("/api/config").json()["models"]
+                   if m["provider"] == "tencent"}
+        assert "yt-video-humanactor" in recipes
+        assert "yt-video-humanactor-1080" in recipes
 
-        monkeypatch.setattr(moarkclient, "model_details", lambda **kw: [
-            {"id": "Duix-Avatar", "description": "d",
-             "operations": [{"type": "audio_video2video", "name": "数字人生成",
-                             "path": "v1/async/videos/audio-video-to-video",
-                             "price": "0.01", "unit_tag": {"name": "秒"}}]}])
-        entries = [m for m in studio.studio_models() if m["provider"] == "moark"]
-        assert len(entries) == 1
-        assert entries[0]["recipe"] == "Duix-Avatar"
-        assert "¥0.01/秒" in entries[0]["label"]
+    def test_tencent_is_listed_first(self, client):
+        models = client.get("/api/config").json()["models"]
+        assert models[0]["provider"] == "tencent"
+        assert models[0]["recipe"] == "yt-video-humanactor"
 
-    def test_moark_lookup_failure_still_lists_wavespeed(self, monkeypatch):
-        """查不到国内清单时，页面不能整个空掉。"""
-        import moarkclient
-
-        def boom(**kw):
-            raise moarkclient.MoarkError("没配 token")
-
-        monkeypatch.setattr(moarkclient, "model_details", boom)
-        models = studio.studio_models()
-        assert models and all(m["provider"] == "wavespeed" for m in models)
+    def test_moark_is_not_offered(self, client):
+        """模力方舟问题太多，下拉里不再出现。"""
+        providers = {m["provider"] for m in client.get("/api/config").json()["models"]}
+        assert "moark" not in providers
 
     def test_labels_mention_price(self, client):
         """运营选模型之前就该知道贵不贵——OmniHuman 一条 80 秒就是 $12.6。"""
         for m in client.get("/api/config").json()["models"]:
             if m["provider"] == "wavespeed":
                 assert "$" in m["label"] or "未实测" in m["label"]
+            if m["provider"] == "tencent":
+                assert "积分" in m["label"]
 
 
 class TestValidation:
@@ -273,6 +284,65 @@ class TestReattach:
 
     def test_unknown_job_404(self, client):
         assert client.post("/api/jobs/nope/reattach").status_code == 404
+
+
+class TestDeleteJob:
+    def test_deletes_listed_job(self, client):
+        job_id = _submit(client).json()["id"]
+        r = client.delete(f"/api/jobs/{job_id}")
+        assert r.status_code == 200
+        assert r.json()["deleted"] is True
+        assert all(j["id"] != job_id for j in client.get("/api/jobs").json())
+        assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+    def test_unknown_job_404(self, client):
+        assert client.delete("/api/jobs/nope").status_code == 404
+
+
+class TestTencentRun:
+    def test_requires_audio(self, client, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(_png())
+        job = Job(id="jt0", created_at="t", provider="tencent",
+                  recipe="yt-video-humanactor", prompt="p", seconds=5,
+                  image=str(img))
+        studio.STORE.add(job)
+        with pytest.raises(ValueError, match="音频"):
+            studio._run_tencent("jt0", job, audio_path="")
+
+    def test_submits_and_downloads(self, client, monkeypatch, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(_png())
+        job = Job(id="jt1", created_at="t", provider="tencent",
+                  recipe="yt-video-humanactor", prompt="对着镜头讲话",
+                  seconds=10, image=str(img))
+        studio.STORE.add(job)
+
+        import tencentclient
+
+        seen = {}
+
+        def fake_run(recipe, **kw):
+            seen["recipe"] = recipe
+            seen["prompt"] = kw["prompt"]
+            kw["on_submit"]("JOB99")
+            return {"url": "https://cos.example/out.mp4"}
+
+        def fake_download(url, out):
+            path = Path(out)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"mp4")
+            return path
+
+        monkeypatch.setattr(tencentclient, "run", fake_run)
+        monkeypatch.setattr(tencentclient, "download", fake_download)
+        studio._run_tencent("jt1", job, audio_path=str(img))
+        stored = studio.STORE.get("jt1")
+        assert seen["recipe"] == "yt-video-humanactor"
+        assert stored.remote_task == "JOB99"
+        assert stored.currency == "CNY"
+        assert stored.cost == 12.0
+        assert Path(stored.video).is_file()
 
 
 class TestMoarkFieldMapping:
@@ -470,7 +540,10 @@ class TestDownloadInsteadOfPreview:
         assert "<video" not in studio.PAGE
 
     def test_page_offers_download_link(self):
-        assert 'class="dl"' in studio.PAGE and "下载成片" in studio.PAGE
+        assert 'class="dl"' in studio.PAGE and ">下载<" in studio.PAGE
+        assert "removeJob" in studio.PAGE and "jobs-table" in studio.PAGE
+        assert "toggleJob" in studio.PAGE
+        assert "国内通道（腾讯 TokenHub）" in studio.PAGE
 
     def test_media_sets_attachment_filename(self, client, tmp_path):
         job_id = _submit(client).json()["id"]
