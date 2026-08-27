@@ -72,44 +72,22 @@ WAVESPEED_MODELS = [
 BODY_AWARE_RECIPES = {"skyreels-std", "skyreels-pro", "skyreels-talking",
                       "pruna-avatar", "omnihuman-15", "omnihuman"}
 
-# 国内通道不写死：端点和单价都从平台自己的模型清单读，见 moarkclient.video_models()
-MOARK_KIND_LABELS = {
-    "audio_video2video": "数字人·口型替换（要模板视频）",
-    "image2video": "图生视频",
-    "multimodal_video": "多模态视频（content[]）",
-    "text2video": "文生/图生视频（content[]）",
-}
+# 国内通道：腾讯云 TokenHub。先接人像驱动，后面有新厂家再往 TENCENT_MODELS 里加。
+TENCENT_MODELS = [
+    {"provider": "tencent", "recipe": "yt-video-humanactor",
+     "label": "[国内·腾讯] 优图 HumanActor 720p　人像驱动，约 1 积分/秒（≈¥1.2）"},
+    {"provider": "tencent", "recipe": "yt-video-humanactor-1080",
+     "label": "[国内·腾讯] 优图 HumanActor 1080p　人像驱动，约 2 积分/秒（≈¥2.4）"},
+]
 
 
 def studio_models() -> list[dict]:
-    """调试台的模型下拉。海外写死，国内实时查平台清单。
+    """调试台的模型下拉。国内写死腾讯、海外写死 WaveSpeed。
 
-    国内那半故意不写死：手写的端点映射已经错过一次（数字人端点猜成
-    image-video-to-video，实际是 audio-video-to-video），而平台清单里就带着
-    正确答案和单价。
+    模力方舟问题太多，不再出现在选项里。旧任务 provider=moark 仍能重连/重试。
+    以后要加国内厂家，往 TENCENT_MODELS 同类列表里追加即可。
     """
-    models = list(WAVESPEED_MODELS)
-    try:
-        import moarkclient
-
-        discovered = moarkclient.avatar_models()
-    except Exception:                             # noqa: BLE001 查不到就只显示海外
-        return models
-
-    for entry in sorted(discovered.values(),
-                        key=lambda e: (e["available"] is False, e["kind"], e["model"])):
-        kind = MOARK_KIND_LABELS.get(entry["kind"], entry["kind"])
-        price = f"¥{entry['price']:g}/{entry['unit']}"
-        state = "" if entry["available"] is not False else "　⚠ 平台侧不可用"
-        models.append({
-            "provider": "moark",
-            "recipe": entry["model"],
-            "label": f"[国内] {entry['model']}　{kind}　{price}{state}",
-            "kind": entry["kind"],
-            "needs": entry["files"],
-            "note": entry["note"] or entry["description"],
-        })
-    return models
+    return list(TENCENT_MODELS) + list(WAVESPEED_MODELS)
 
 
 @dataclass
@@ -218,7 +196,19 @@ class JobStore:
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
-    def list(self, limit: int = 60) -> list[Job]:
+    def delete(self, job_id: str) -> Job | None:
+        """删掉一条。成片目录一起清；上传的素材可能被别的任务共用，不动。"""
+        with self._lock:
+            job = self._jobs.pop(job_id, None)
+            if job:
+                self._flush()
+        if job:
+            out_dir = OUTPUT_DIR / job_id
+            if out_dir.is_dir():
+                shutil.rmtree(out_dir, ignore_errors=True)
+        return job
+
+    def list(self, limit: int = 200) -> list[Job]:
         return sorted(self._jobs.values(),
                       key=lambda j: j.created_at, reverse=True)[:limit]
 
@@ -282,7 +272,9 @@ def _run_job(job_id: str) -> None:
             audio_path = str(synth)
             STORE.update(job_id, audio=audio_path, cost=round(tts_cost, 4))
 
-        if job.provider == "moark":
+        if job.provider == "tencent":
+            _run_tencent(job_id, job, audio_path)
+        elif job.provider == "moark":
             _run_moark(job_id, job, audio_path)
         else:
             _run_wavespeed(job_id, job, audio_path)
@@ -349,6 +341,30 @@ def _run_wavespeed(job_id: str, job: Job, audio_path: str) -> None:
                  cost=round(job.cost + cost, 4))
 
 
+def _run_tencent(job_id: str, job: Job, audio_path: str) -> None:
+    import tencentclient
+
+    if not audio_path:
+        raise ValueError("腾讯 HumanActor 需要音频：上传一个，或者填台词让它自动合成")
+    if not job.image:
+        raise ValueError("腾讯 HumanActor 需要角色图")
+
+    STORE.update(job_id, stage="提交（腾讯 TokenHub）")
+    result = tencentclient.run(
+        job.recipe, prompt=job.prompt or "画面中的人物正在对着镜头讲话",
+        audio=audio_path, image=job.image,
+        on_submit=lambda tid: STORE.update(job_id, remote_task=tid),
+        on_tick=lambda s, e: STORE.update(job_id, stage=f"生成中 {s} {e}s"))
+
+    out = OUTPUT_DIR / job_id / "result.mp4"
+    STORE.update(job_id, stage="下载结果")
+    tencentclient.download(result["url"], out)
+    job = STORE.get(job_id)
+    estimate = tencentclient.estimated_cny(job.recipe, job.seconds or 0)
+    STORE.update(job_id, video=str(out), currency="CNY",
+                 cost=round((job.cost or 0) + estimate, 4))
+
+
 def _run_moark(job_id: str, job: Job, audio_path: str) -> None:
     import moarkclient
 
@@ -402,7 +418,19 @@ def _reattach(job_id: str) -> None:
         return
     STORE.update(job_id, status="running", stage="重新接上服务端任务", error="")
     try:
-        if job.provider == "moark":
+        out = OUTPUT_DIR / job_id / "result.mp4"
+        if job.provider == "tencent":
+            import tencentclient
+
+            spec = tencentclient.recipe_spec(job.recipe)
+            result = tencentclient.poll(
+                spec["model"], job.remote_task,
+                on_tick=lambda s, e: STORE.update(job_id, stage=f"重连中 {s} {e}s"))
+            url = result["url"]
+            cost = tencentclient.estimated_cny(job.recipe, job.seconds or 0)
+            currency = "CNY"
+            tencentclient.download(url, out)
+        elif job.provider == "moark":
             import moarkclient
 
             result = moarkclient.poll(
@@ -410,6 +438,7 @@ def _reattach(job_id: str) -> None:
                 on_tick=lambda s, e: STORE.update(job_id, stage=f"重连中 {s} {e}s"))
             url, cost = result["url"], float(result.get("price") or 0.0)
             currency = result.get("currency") or "CNY"
+            moarkclient.download(url, out)
         else:
             import wsclient
 
@@ -417,15 +446,6 @@ def _reattach(job_id: str) -> None:
                 job.remote_task,
                 on_tick=lambda s, e: STORE.update(job_id, stage=f"重连中 {s} {e}s"))
             url, cost, currency = result["outputs"][0], job.cost, "USD"
-
-        out = OUTPUT_DIR / job_id / "result.mp4"
-        if job.provider == "moark":
-            import moarkclient
-
-            moarkclient.download(url, out)
-        else:
-            import wsclient
-
             wsclient.download(url, out)
         STORE.update(job_id, video=str(out), cost=round(cost, 4), currency=currency)
         _attach_metrics(job_id, str(out))
@@ -491,12 +511,12 @@ def create_app():
         except Exception as exc:                  # noqa: BLE001
             out["wavespeed_error"] = str(exc)
         try:
-            import moarkclient
+            import tencentclient
 
-            out["moark"] = moarkclient.quota()
-            out["moark_package"] = moarkclient.package_balance()
+            tencentclient.api_key()
+            out["tencent"] = True
         except Exception as exc:                  # noqa: BLE001
-            out["moark_error"] = str(exc)
+            out["tencent_error"] = str(exc)
         return JSONResponse(out)
 
     @app.post("/api/jobs")
@@ -578,6 +598,13 @@ def create_app():
         if job is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(json_safe(asdict(job)))
+
+    @app.delete("/api/jobs/{job_id}")
+    def delete_job(job_id: str) -> JSONResponse:
+        job = STORE.delete(job_id)
+        if job is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"id": job_id, "deleted": True})
 
     @app.post("/api/jobs/{job_id}/retry")
     def retry(job_id: str) -> JSONResponse:
@@ -691,8 +718,20 @@ PAGE = r"""<!DOCTYPE html>
   .form-grid .col-models, .form-grid .col-actions { grid-column:1 / -1; }
   @media (max-width:900px){ .form-grid{ grid-template-columns:1fr; } }
 
-  .jobs .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr));
-                gap:12px; }
+  .jobs #list { overflow-x:auto; }
+  .jobs-table { width:100%; border-collapse:collapse; font-size:13px; }
+  .jobs-table th { text-align:left; color:var(--dim); font-weight:500;
+                   padding:8px 10px; border-bottom:1px solid var(--line);
+                   white-space:nowrap; }
+  .jobs-table td { padding:8px 10px; border-bottom:1px solid var(--line);
+                   vertical-align:middle; }
+  .jobs-table tr.job-row { cursor:pointer; }
+  .jobs-table tr.job-row:hover { background:#1a1a1a; }
+  .jobs-table tr.failed td:first-child { box-shadow:inset 3px 0 0 #833; }
+  .jobs-table .detail { background:#161616; }
+  .jobs-table .detail td { padding:12px 14px 16px; }
+  .jobs-table .ops { white-space:nowrap; }
+  .jobs-table .ops > * { margin-right:6px; }
 
   /* 左右两列布局：标签在左、控件在右，一行一件事 */
   fieldset { border:1px solid var(--line); border-radius:10px; margin:0 0 14px; padding:12px 16px; }
@@ -719,8 +758,10 @@ PAGE = r"""<!DOCTYPE html>
   button.ghost { background:#242424; color:var(--fg); border:1px solid var(--line);
                  font-weight:400; font-size:13px; padding:7px 12px; width:auto; }
   a.dl { display:inline-block; background:#164; color:#cfe; text-decoration:none;
-         border-radius:8px; padding:8px 14px; font-size:13px; margin-top:8px; }
+         border-radius:8px; padding:5px 10px; font-size:12px; }
   a.dl:hover { background:#1a7a4a; }
+  button.danger { background:#422; color:#fbb; border:1px solid #833;
+                  font-weight:400; font-size:12px; padding:5px 10px; }
 
   .preview { background:#0e0e0e; border:1px dashed var(--line); border-radius:8px;
              padding:10px; font-size:12.5px; color:#cfc; white-space:pre-wrap;
@@ -903,7 +944,8 @@ async function boot() {
     if (m.provider !== lastProvider) {
       const h = document.createElement("div");
       h.className = "grp";
-      h.textContent = m.provider === "moark" ? "国内通道（模力方舟）" : "海外通道（WaveSpeed）";
+      h.textContent = m.provider === "tencent" ? "国内通道（腾讯 TokenHub）"
+        : "海外通道（WaveSpeed）";
       holder.appendChild(h);
       lastProvider = m.provider;
     }
@@ -913,7 +955,7 @@ async function boot() {
     label.querySelector("input").addEventListener("change", updatePicked);
     holder.appendChild(label);
   }
-  // 默认勾最便宜的那个
+  // 默认勾列表第一项：国内腾讯 HumanActor 720p
   const first = holder.querySelector("input[type=checkbox]");
   if (first) { first.checked = true; }
 
@@ -1083,42 +1125,60 @@ async function refreshBalance() {
     const bits = [];
     if (b.wavespeed !== undefined) bits.push(`WaveSpeed $${b.wavespeed}`);
     if (b.wavespeed_error) bits.push("WaveSpeed 未配置");
-    if (b.moark_package) bits.push(`国内资源包 ¥${b.moark_package.balance}`);
-    if (b.moark && b.moark.available !== undefined)
-      bits.push(`并发 ${b.moark.available}/${b.moark.max_concurrency}`);
+    if (b.tencent) bits.push("腾讯 TokenHub 已配置");
+    if (b.tencent_error) bits.push("腾讯 TokenHub 未配置");
     $("bal").textContent = bits.join("　") || "余额不可用";
   } catch { $("bal").textContent = "余额不可用"; }
 }
 
-function jobCard(j) {
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+const EXPANDED = new Set();
+let LAST_JOBS_JSON = "";
+
+function jobRow(j) {
   const cls = j.status === "failed" ? "err" : j.status === "done" ? "done" : "run";
   const money = j.cost ? `${j.currency === "CNY" ? "¥" : "$"}${j.cost}` : "-";
   const defects = ((j.metrics && j.metrics.defects) || []).map(d =>
-    `<li class="${d.severity}">${d.dimension}/${d.code} ${d.detail}</li>`).join("");
+    `<li class="${d.severity}">${esc(d.dimension)}/${esc(d.code)} ${esc(d.detail)}</li>`).join("");
   const counts = j.metrics && j.metrics.available
-    ? `${j.metrics.major_count} 重 / ${j.metrics.minor_count} 轻` : "";
+    ? `${j.metrics.major_count}重/${j.metrics.minor_count}轻` : "-";
   const recoverable = j.status === "failed" && j.remote_task;
-  /* 不做内联播放：列表里几十条会被浏览器自动预取，带宽扛不住。要看就下载。 */
-  return `<div class="job ${j.status}">
-    <h3>${j.id}
-      <span class="tag ${cls}">${j.status}</span>
-      <span class="tag">${j.recipe}</span>
-      <span class="tag">${j.seconds || "?"}s</span>
-      ${j.batch ? `<span class="tag batch">批次 ${j.batch}</span>` : ""}
-      ${j.preset ? `<span class="tag">${j.preset}</span>` : ""}
-      ${counts ? `<span class="tag">${counts}</span>` : ""}
-    </h3>
-    <div class="meta">${j.stage || ""}　${money}${j.elapsed ? "　耗时 " + j.elapsed + "s" : ""}</div>
-    ${j.video ? `<a class="dl" href="/media/${j.id}" download>下载成片</a>` : ""}
-    ${defects ? `<ul class="defect">${defects}</ul>` : ""}
-    ${(j.warnings || []).map(w => `<p class="meta" style="color:#fc9">注意：${w}</p>`).join("")}
-    ${j.error ? `<pre class="err">${j.error}</pre>` : ""}
-    ${recoverable ? `<button class="ghost" onclick="reattach('${j.id}')">
-        重连取回（${j.remote_task}）</button>` : ""}
-    ${j.status === "failed" ? `<button class="ghost" onclick="retry('${j.id}')">
-        用同样的参数重试</button>` : ""}
-    <details><summary class="meta">提示词</summary><div class="preview">${j.prompt || "(空)"}</div></details>
-  </div>`;
+  const channel = j.provider === "tencent" ? "腾讯" : (j.provider === "moark" ? "方舟" : "海外");
+  const ops = [
+    j.video ? `<a class="dl" href="/media/${j.id}" download>下载</a>` : "",
+    recoverable ? `<button class="ghost" onclick="reattach('${j.id}')">重连</button>` : "",
+    j.status === "failed" ? `<button class="ghost" onclick="retry('${j.id}')">重试</button>` : "",
+    `<button class="ghost danger" onclick="removeJob('${j.id}')">删除</button>`,
+  ].filter(Boolean).join(" ");
+  const extra = [
+    j.error ? `<pre class="err">${esc(j.error)}</pre>` : "",
+    (j.warnings || []).map(w => `<p class="meta" style="color:#fc9">注意：${esc(w)}</p>`).join(""),
+    defects ? `<ul class="defect">${defects}</ul>` : '<p class="meta">没有检测缺陷。</p>',
+    `<details open><summary class="meta">提示词</summary><div class="preview">${esc(j.prompt) || "(空)"}</div></details>`,
+  ].join("");
+  const open = EXPANDED.has(j.id) ? "" : " hidden";
+  return `<tr class="job-row ${j.status}" data-id="${j.id}" onclick="toggleJob('${j.id}')">
+      <td><span class="tag ${cls}">${esc(j.status)}</span></td>
+      <td>${esc(j.id)}${j.batch ? ` <span class="tag batch">${esc(j.batch)}</span>` : ""}</td>
+      <td>${esc(channel)} / ${esc(j.recipe)}</td>
+      <td>${esc(j.stage || "-")}</td>
+      <td>${j.seconds || "?"}s</td>
+      <td>${money}${j.elapsed ? `　${j.elapsed}s` : ""}</td>
+      <td>${counts}</td>
+      <td class="ops" onclick="event.stopPropagation()">${ops}</td>
+    </tr>
+    <tr class="detail" id="detail-${j.id}"${open}><td colspan="8">${extra}</td></tr>`;
+}
+
+function toggleJob(id) {
+  const row = document.getElementById("detail-" + id);
+  if (!row) return;
+  row.hidden = !row.hidden;
+  if (row.hidden) EXPANDED.delete(id); else EXPANDED.add(id);
 }
 
 async function retry(id) {
@@ -1133,6 +1193,13 @@ async function reattach(id) {
   poll();
 }
 
+async function removeJob(id) {
+  if (!confirm("删除这条任务？成片会一起删掉，上传的素材还留着。")) return;
+  const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+  if (!r.ok) alert((await r.json()).error || "删除失败");
+  poll();
+}
+
 async function poll() {
   try {
     const jobs = await (await fetch("/api/jobs")).json();
@@ -1141,11 +1208,21 @@ async function poll() {
     badge.textContent = jobs.length ? String(jobs.length) : "";
     badge.classList.toggle("on", running > 0);
     $("jobhint").textContent = jobs.length
-      ? `共 ${jobs.length} 条，${running} 条在跑。同批次的任务参数完全一样，只有模型不同，可以直接对比。`
+      ? `共 ${jobs.length} 条，${running} 条在跑。点一行展开提示词和检测信息。`
       : "";
-    $("list").innerHTML = jobs.length
-      ? `<div class="grid">${jobs.map(jobCard).join("")}</div>`
-      : '<p class="meta">还没有任务。到「配置」页填好、勾上模型，点生成。</p>';
+    const raw = JSON.stringify(jobs);
+    if (raw !== LAST_JOBS_JSON) {
+      LAST_JOBS_JSON = raw;
+      $("list").innerHTML = jobs.length
+        ? `<table class="jobs-table">
+             <thead><tr>
+               <th>状态</th><th>任务</th><th>模型</th><th>阶段</th>
+               <th>时长</th><th>费用/耗时</th><th>缺陷</th><th>操作</th>
+             </tr></thead>
+             <tbody>${jobs.map(jobRow).join("")}</tbody>
+           </table>`
+        : '<p class="meta">还没有任务。到「配置」页填好、勾上模型，点生成。</p>';
+    }
     if (running) refreshBalance();
   } catch {}
   setTimeout(poll, 4000);
